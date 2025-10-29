@@ -145,6 +145,7 @@ async def handle_incoming_call(request: Request):
                 "output": {
                     "sample_rate": 8000  # Tell Hume to output at 8kHz
                 }
+            }
         }
         await hume_websocket.send(json.dumps(initial_message))
         print("--- Sent initial configuration/prompt to Hume EVI. ---")
