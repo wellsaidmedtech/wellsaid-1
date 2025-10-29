@@ -4,8 +4,8 @@ import asyncio
 import websockets
 import json
 import logging
-import audioop  # <-- NEW: For transcoding
-import base64   # <-- NEW: For decoding/encoding payloads
+import audioop
+import base64
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from twilio.twiml.voice_response import VoiceResponse, Connect
@@ -37,18 +37,15 @@ DUMMY_PATIENT_DB = {
 active_connections = {}
 
 # --- Standard HTTP Endpoints ---
-
 @app.get("/")
 async def hello_world():
     return {"message": "Healthcare AI Server (FastAPI) is running!"}
 
-# ... (other HTTP routes like /api/test are unchanged) ...
+# ... (other HTTP routes) ...
 
 # --- Twilio Incoming Call Webhook ---
-
 @app.post("/twilio/incoming_call")
 async def handle_incoming_call(request: Request):
-    """Handles incoming calls and connects Twilio audio stream to Hume EVI."""
     log.info("-" * 30)
     log.info(">>> Twilio Incoming Call Webhook Received <<<")
     
@@ -61,9 +58,8 @@ async def handle_incoming_call(request: Request):
     patient_id = "+19087839700" # Hardcoding your number for this test
     if from_number != patient_id:
         log.warning(f"--- WARNING: Call from unknown number {from_number} ---")
-        # For testing, we'll just assign the test patient
     
-    patient_data = DUMMY_PATIENT_DB["12345"] # Use test patient
+    patient_data = DUMMY_PATIENT_DB["12345"]
 
     if not HUME_API_KEY or not HUME_CONFIG_ID:
         log.error("--- ERROR: Missing API Key or Config ID. ---")
@@ -72,7 +68,7 @@ async def handle_incoming_call(request: Request):
         response.hangup()
         return Response(content=str(response), media_type="text/xml")
 
-    system_prompt = f"You are Sam, an empathetic AI medical assistant from WellSaid Clinic..." # (Your prompt)
+    system_prompt = f"You are Sam, an empathetic AI medical assistant..." # (Your prompt)
     log.info("--- Generated System Prompt ---")
 
     try:
@@ -87,19 +83,27 @@ async def handle_incoming_call(request: Request):
             "stream_sid": None
         }
 
-        # --- NEW: Set Hume config to linear16 ---
+        # --- NEW: Correctly structure the audio config for Input AND Output ---
         initial_message = {
             "type": "session_settings",
             "config_id": HUME_CONFIG_ID,
             "prompt": { "text": system_prompt },
             "audio": {
-                "sample_rate": 8000,
-                "encoding": "linear16",  # <-- REQUIRED BY HUME
-                "channels": 1
+                "input": { # Describe what we are sending to Hume
+                    "sample_rate": 8000,
+                    "encoding": "linear16",
+                    "channels": 1
+                },
+                "output": { # Describe what we want Hume to send us
+                    "sample_rate": 8000,
+                    "encoding": "linear16",
+                    "channels": 1
+                }
             }
         }
+        # ---------------------------------------------------------------------
         await hume_websocket.send(json.dumps(initial_message))
-        log.info("--- Sent initial configuration/prompt to Hume EVI (linear16) ---")
+        log.info("--- Sent initial configuration/prompt to Hume EVI ---")
 
         asyncio.create_task(listen_to_hume(call_sid))
 
@@ -124,10 +128,8 @@ async def handle_incoming_call(request: Request):
     return Response(content=str(response), media_type="text/xml")
 
 # --- WebSocket Endpoint for Twilio Audio Stream ---
-
 @app.websocket("/twilio/audiostream/{call_sid}")
 async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
-    """Receives audio from Twilio, transcodes it, and forwards to Hume."""
     await websocket.accept()
     log.info(f"--- Twilio WebSocket connected for CallSid: {call_sid} ---")
 
@@ -151,18 +153,16 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
                 log.info(f"--- Twilio 'start' message received, Stream SID: {stream_sid} ---")
             
             elif event == "media":
-                # log.info("--- Twilio 'media' event ---") # Too noisy
+                log.info("--- Twilio 'media' event ---") # <-- UNCOMMENTED
                 payload = data["media"]["payload"]
                 
-                # --- NEW: Transcode mulaw from Twilio to linear16 for Hume ---
                 mulaw_bytes = base64.b64decode(payload)
-                pcm_bytes = audioop.ulaw2lin(mulaw_bytes, 2) # 2 = 16-bit
+                pcm_bytes = audioop.ulaw2lin(mulaw_bytes, 2)
                 pcm_b64 = base64.b64encode(pcm_bytes).decode('utf-8')
-                # -----------------------------------------------------------
                 
                 hume_message = {
                     "type": "audio_input",
-                    "data": pcm_b64 # Send linear16 base64
+                    "data": pcm_b64
                 }
                 await hume_ws.send(json.dumps(hume_message))
 
@@ -183,9 +183,7 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
             del active_connections[call_sid]
 
 # --- Background Task to Listen to Hume ---
-
 async def listen_to_hume(call_sid: str):
-    """Listens for audio from Hume, transcodes it, and forwards to Twilio."""
     log.info(f"--- Started listening to Hume EVI for CallSid: {call_sid} ---")
     
     try:
@@ -196,27 +194,25 @@ async def listen_to_hume(call_sid: str):
             hume_type = hume_data.get("type")
 
             if hume_type != "audio_output":
-                log.info(f"--- Hume Event: {hume_type} ---") # Log non-audio events
+                log.info(f"--- Hume Event: {hume_type} ---")
             
             if hume_type == "audio_output":
-                # log.info("--- Hume Event: 'audio_output' ---") # Too noisy
+                log.info("--- Hume Event: 'audio_output' ---") # <-- UNCOMMENTED
                 
                 if call_sid in active_connections and active_connections[call_sid].get("twilio_ws") and active_connections[call_sid].get("stream_sid"):
                     twilio_ws = active_connections[call_sid]["twilio_ws"]
-                    stream_sid = active_connections[call_sid]["stream_sid"]
+                    stream_.sid = active_connections[call_sid]["stream_sid"]
                     
-                    # --- NEW: Transcode linear16 from Hume to mulaw for Twilio ---
                     pcm_b64 = hume_data["data"]
                     pcm_bytes = base64.b64decode(pcm_b64)
-                    mulaw_bytes = audioop.lin2ulaw(pcm_bytes, 2) # 2 = 16-bit
+                    mulaw_bytes = audioop.lin2ulaw(pcm_bytes, 2)
                     mulaw_b64 = base64.b64encode(mulaw_bytes).decode('utf-8')
-                    # ------------------------------------------------------------
-
+                    
                     twilio_media_message = {
                         "event": "media",
                         "streamSid": stream_sid,
                         "media": {
-                            "payload": mulaw_b64 # Send mulaw base64
+                            "payload": mulaw_b64
                         }
                     }
                     await twilio_ws.send_text(json.dumps(twilio_media_message))
