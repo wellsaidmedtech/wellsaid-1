@@ -143,9 +143,9 @@ async def handle_incoming_call(request: Request):
             "config_id": HUME_CONFIG_ID,
             "prompt": { "text": system_prompt },
             "audio": {
-                "output": {
-                    "sample_rate": 8000
-                }
+                "sample_rate": 8000,  # 8kHz for Twilio
+                "encoding": "mulaw",  # μ-law encoding for Twilio
+                "channels": 1         # 1 channel (mono) for Twilio
             }
         }
         await hume_websocket.send(json.dumps(initial_message))
