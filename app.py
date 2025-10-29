@@ -1,11 +1,12 @@
 import os
 import requests
-import asyncio      # Built-in async library
-import websockets   # For connecting to Hume EVI
+import asyncio
+import websockets
 import json
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response # For TwiML
-# No more Flask, flask-sock, gevent, or WsgiToAsgi needed
+from fastapi.responses import Response
+# We also need to import Twilio's TwiML classes at the top for the HTTP route
+from twilio.twiml.voice_response import VoiceResponse, Connect
 
 app = FastAPI()
 
@@ -19,7 +20,7 @@ DUMMY_PATIENT_DB = {
     "12345": {
         "name": "Jane Doe",
         "dob": "1978-11-20",
-        "phone_number": "+15551234567", # Your test number
+        "phone_number": "+19087839700", # Your test number
         "conditions": ["Type 2 Diabetes", "Hypertension"],
         "medications": ["Metformin 500mg", "Lisinopril 10mg"]
     },
@@ -33,9 +34,8 @@ DUMMY_PATIENT_DB = {
 }
 
 # --- Connection Manager ---
-# This will store the active WebSocket connections for both Hume and Twilio
 # Key: Twilio CallSid
-# Value: {"hume_ws": WebSocket, "twilio_ws": WebSocket}
+# Value: {"hume_ws": WebSocket, "twilio_ws": WebSocket, "stream_sid": str}
 active_connections = {}
 
 # --- Standard HTTP Endpoints ---
@@ -51,23 +51,17 @@ async def api_test():
 
 @app.get("/api/start-call/{patient_id}")
 async def start_call(patient_id: str):
-    print(f"--- Server received request for patient_id: {patient_id} ---")
     patient_data = DUMMY_PATIENT_DB.get(patient_id)
     if patient_data:
-        print(f"Found patient: {patient_data['name']}")
-        # In a real outbound scenario, you'd trigger a Twilio call here
         return patient_data
     else:
-        print("--- Patient ID not found in database ---")
         raise HTTPException(status_code=404, detail="Patient not found")
 
 @app.get("/api/test-hume")
 async def test_hume_connection():
-    # This function remains synchronous but is run by FastAPI in a threadpool
     print("--- Testing Hume API connection using manual request ---")
     if not HUME_API_KEY:
         raise HTTPException(status_code=500, detail="HUME_API_KEY missing")
-
     hume_configs_url = "https://api.hume.ai/v0/evi/configs"
     headers = {"X-Hume-Api-Key": HUME_API_KEY, "Accept": "application/json; charset=utf-8"}
     try:
@@ -86,9 +80,6 @@ async def handle_incoming_call(request: Request):
     print("-" * 30)
     print(">>> Twilio Incoming Call Webhook Received <<<")
     
-    # Import TwiML classes locally inside the function
-    from twilio.twiml.voice_response import VoiceResponse, Connect
-
     form_data = await request.form()
     call_sid = form_data.get('CallSid')
     from_number = form_data.get('From')
@@ -118,7 +109,16 @@ async def handle_incoming_call(request: Request):
 
     # --- Construct System Prompt ---
     system_prompt = f"""
-    You are an empathetic AI medical assistant... [Your full prompt text here using patient_data]
+    You are an empathetic AI medical assistant from WellSaid Clinic.
+    Your name is 'Sam'.
+    Your primary goal is to call patients for post-discharge check-ins.
+    You must be kind, patient, and clear.
+    You are calling patient {patient_data['name']}.
+    
+    Start the conversation by introducing yourself and asking if this is a good time to talk for a couple of minutes.
+    
+    DO NOT provide medical advice.
+    Your goal is to understand their current health status and identify if they need further assistance from clinical staff.
     """
     print("--- Generated System Prompt ---")
 
@@ -132,12 +132,13 @@ async def handle_incoming_call(request: Request):
         # Store the connection
         active_connections[call_sid] = {
             "hume_ws": hume_websocket,
-            "twilio_ws": None # Twilio's WS hasn't connected yet
+            "twilio_ws": None, # Twilio's WS hasn't connected yet
+            "stream_sid": None # We get this from Twilio's 'start' message
         }
 
         # --- Send Initial Configuration/Prompt Message to Hume ---
         initial_message = {
-            "type": "session_settings", # Or appropriate type
+            "type": "session_settings",
             "config_id": HUME_CONFIG_ID,
             "prompt": { "text": system_prompt },
         }
@@ -157,13 +158,13 @@ async def handle_incoming_call(request: Request):
     # --- Respond to Twilio to start streaming ---
     response = VoiceResponse()
     connect = Connect()
-    render_app_name = os.environ.get("RENDER_EXTERNAL_HOSTNAME", "YOUR_RENDER_APP_NAME.onrender.com")
+    render_app_name = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
     stream_url = f"wss://{render_app_name}/twilio/audiostream/{call_sid}"
     
     print(f"--- Telling Twilio to stream audio to: {stream_url} ---")
     connect.stream(url=stream_url)
     response.append(connect)
-    response.pause(length=60) # Keep call alive while streaming
+    response.pause(length=60) 
 
     print("--- Responding to Twilio with TwiML <Connect><Stream> ---")
     return Response(content=str(response), media_type="text/xml")
@@ -176,13 +177,11 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
     await websocket.accept()
     print(f"--- Twilio WebSocket connected for CallSid: {call_sid} ---")
 
-    # Check if the Hume connection exists
     if call_sid not in active_connections:
         print(f"--- ERROR: Hume connection not found for CallSid: {call_sid}. Closing Twilio stream. ---")
         await websocket.close(code=1011, reason="Hume connection not established")
         return
 
-    # Add the Twilio WebSocket to our connection manager
     active_connections[call_sid]["twilio_ws"] = websocket
     hume_ws = active_connections[call_sid]["hume_ws"]
 
@@ -190,27 +189,35 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
         while True:
             # Receive audio data from Twilio
             message_str = await websocket.receive_text()
+            data = json.loads(message_str)
+
+            # --- NEW: Handle different event types from Twilio ---
+            if data["event"] == "start":
+                stream_sid = data["start"]["streamSid"]
+                active_connections[call_sid]["stream_sid"] = stream_sid
+                print(f"--- Twilio 'start' message received, Stream SID: {stream_sid} ---")
             
-            # TODO: Parse Twilio's JSON message, extract the audio payload,
-            #       and send it in the format Hume expects over the hume_ws.
-            # print(f"Twilio msg: {message_str[:50]}...") # Debug
-            
-            # Example (assuming Hume just wants the raw base64 audio payload):
-            # data = json.loads(message_str)
-            # if data.get("event") == "media":
-            #    hume_message = {
-            #        "type": "audio_input",
-            #        "data": data["media"]["payload"] # Send the base64 string
-            #    }
-            #    await hume_ws.send(json.dumps(hume_message))
-            pass # Placeholder for audio forwarding
+            elif data["event"] == "media":
+                # This is the audio payload
+                payload = data["media"]["payload"] # This is base64 audio
+                
+                # --- NEW: Forward the audio to Hume EVI ---
+                hume_message = {
+                    "type": "audio_input",
+                    "data": payload # Send the base64 string
+                }
+                await hume_ws.send(json.dumps(hume_message))
+
+            elif data["event"] == "stop":
+                print(f"--- Twilio 'stop' message received for CallSid: {call_sid} ---")
+                break # Exit the loop, which will trigger the finally block
 
     except WebSocketDisconnect:
         print(f"--- Twilio WebSocket disconnected for CallSid: {call_sid} ---")
     except Exception as e:
         print(f"--- Error in Twilio audio stream for {call_sid}: {e} ---")
     finally:
-        print(f"--- Cleaning up connections for CallSid: {call_sid} ---")
+        print(f"--- Cleaning up connections for CallSid: {call_sid} (Twilio WS closed) ---")
         if call_sid in active_connections:
             hume_ws = active_connections[call_sid].get("hume_ws")
             if hume_ws:
@@ -227,25 +234,42 @@ async def listen_to_hume(call_sid: str):
         hume_ws = active_connections[call_sid]["hume_ws"]
         
         async for message_str in hume_ws:
-            # TODO: Parse Hume's message (JSON expected).
-            # If it's an audio message, format it for Twilio Stream
-            # and send it back over the twilio_ws.
-            # print(f"Hume msg: {message_str[:50]}...") # Debug
+            hume_data = json.loads(message_str)
             
-            # twilio_ws = active_connections[call_sid].get("twilio_ws")
-            # if twilio_ws:
-            #    hume_data = json.loads(message_str)
-            #    if hume_data.get("type") == "audio_output":
-            #        audio_b64 = hume_data["data"]
-            #        
-            #        # Format for Twilio Stream (needs streamSid, which we must capture)
-            #        twilio_media_message = {
-            #            "event": "media",
-            #            "streamSid": "...", # You get this from Twilio's 'start' message
-            #            "media": { "payload": audio_b64 }
-            #        }
-            #        await twilio_ws.send_text(json.dumps(twilio_media_message))
-            pass # Placeholder for audio forwarding
+            # --- NEW: Check for audio from Hume ---
+            if hume_data.get("type") == "audio_output":
+                # We have audio from Hume, send it to Twilio
+                
+                # Check if Twilio's connection is ready
+                if call_sid in active_connections and active_connections[call_sid].get("twilio_ws") and active_connections[call_sid].get("stream_sid"):
+                    twilio_ws = active_connections[call_sid]["twilio_ws"]
+                    stream_sid = active_connections[call_sid]["stream_sid"]
+                    audio_b64 = hume_data["data"]
+
+                    # --- NEW: Format the message for Twilio ---
+                    twilio_media_message = {
+                        "event": "media",
+                        "streamSid": stream_sid,
+                        "media": {
+                            "payload": audio_b64
+                        }
+                    }
+                    await twilio_ws.send_text(json.dumps(twilio_media_message))
+                
+                else:
+                    print("--- Hume sent audio, but Twilio WS not ready. Skipping. ---")
+            
+            elif hume_data.get("type") == "user_interruption":
+                print("--- Hume detected user interruption ---")
+            
+            elif hume_data.get("type") == "tool_call":
+                print(f"--- Hume requested tool call: {hume_data} ---")
+                # TODO: Handle tool calls (like MedlinePlus) here
+            
+            elif hume_data.get("type") == "error":
+                print(f"--- Hume EVI Error: {hume_data['error']} ---")
+                
+            # Handle other Hume message types if needed...
 
     except websockets.exceptions.ConnectionClosedOK:
         print(f"--- Hume WebSocket closed normally for {call_sid}. ---")
