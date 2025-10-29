@@ -155,7 +155,6 @@ async def handle_incoming_call(request: Request):
         # --- 4. Send Initial Settings to Hume (Override Method) ---
         initial_message = {
             "type": "session_settings",
-            "config_id": HUME_CONFIG_ID, # Use the base config from your .env
             "prompt": { "text": system_prompt }, # Override the prompt
             "audio": {
                 "encoding": "linear16", # Hume expects 16-bit little-endian PCM
