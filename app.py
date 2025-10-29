@@ -89,16 +89,9 @@ async def handle_incoming_call(request: Request):
             "config_id": HUME_CONFIG_ID,
             "prompt": { "text": system_prompt },
             "audio": {
-                "input": { # Describe what we are sending to Hume
-                    "sample_rate": 8000,
-                    "encoding": "linear16",
-                    "channels": 1
-                },
-                "output": { # Describe what we want Hume to send us
-                    "sample_rate": 8000,
-                    "encoding": "linear16",
-                    "channels": 1
-                }
+                "sample_rate": 8000,
+                "encoding": "linear16", # The correct value
+                "channels": 1         # In the correct flat structure
             }
         }
         # ---------------------------------------------------------------------
