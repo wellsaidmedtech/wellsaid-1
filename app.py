@@ -189,7 +189,7 @@ async def handle_incoming_call(request: Request):
 
         # --- 4. Connect to Hume EVI via WebSocket using the temporary config ID ---
         log.info(f"--- Attempting WebSocket connection to Hume EVI using config_id: {temp_config_id} ---")
-        uri_with_key = f"{HUME_API_WS_URI}?apiKey={HUME_API_KEY}" # Check variable name, maybe HUME_EVI_WS_URI
+        uri_with_key = f"{HUME_EVI_WS_URI}?apiKey={HUME_API_KEY}" # Check variable name, maybe HUME_EVI_WS_URI
         hume_websocket = await websockets.connect(uri_with_key)
         log.info("--- WebSocket connection to Hume EVI established. ---")
 
