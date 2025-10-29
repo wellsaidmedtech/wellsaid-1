@@ -273,7 +273,7 @@ async def listen_to_hume(call_sid: str):
                 log.warning(f"--- Hume requested tool call: {hume_data} ---")
             
             elif hume_type == "error":
-                log.error(f"--- Hume EVI Error: {hume_data['error']} ---")
+                log.error(f"--- Hume EVI Error (Full Message): {hume_data} ---")
 
     except websockets.exceptions.ConnectionClosedOK:
         log.info(f"--- Hume WebSocket closed normally for {call_sid}. ---")
