@@ -83,18 +83,17 @@ async def handle_incoming_call(request: Request):
             "stream_sid": None
         }
 
-        # --- NEW: Correctly structure the audio config for Input AND Output ---
         initial_message = {
             "type": "session_settings",
             "config_id": HUME_CONFIG_ID,
             "prompt": { "text": system_prompt },
             "audio": {
+                "format": "linear16",  
                 "sample_rate": 8000,
-                "encoding": "linear16", # The correct value
-                "channels": 1         # In the correct flat structure
+                "channels": 1
             }
+            # -----------------------------
         }
-        # ---------------------------------------------------------------------
         await hume_websocket.send(json.dumps(initial_message))
         log.info("--- Sent initial configuration/prompt to Hume EVI ---")
 
@@ -148,24 +147,20 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
             elif event == "media":
                 log.info("--- Twilio 'media' event ---")
                 payload = data["media"]["payload"]
-                
-                try: 
+
+                try:
                     mulaw_bytes = base64.b64decode(payload)
-                    log.info(f"    Received {len(mulaw_bytes)} mulaw bytes from Twilio.") 
-                    
-                    # Convert to PCM (likely little-endian)
-                    pcm_bytes_native = audioop.ulaw2lin(mulaw_bytes, 2) 
-                    
-                    # --- NEW: Swap to Big-Endian for Hume ---
-                    pcm_bytes_big_endian = audioop.byteswap(pcm_bytes_native, 2) # 2 = 16-bit width
-                    log.info(f"    Converted to {len(pcm_bytes_big_endian)} PCM bytes (Big Endian) for Hume.") 
-                    # ----------------------------------------
-                    
-                    pcm_b64 = base64.b64encode(pcm_bytes_big_endian).decode('utf-8') # Send swapped bytes
-                    
+                    log.info(f"    Received {len(mulaw_bytes)} mulaw bytes from Twilio.")
+
+                    # Convert to PCM (little-endian is audioop's default)
+                    pcm_bytes = audioop.ulaw2lin(mulaw_bytes, 2)
+                    log.info(f"    Converted to {len(pcm_bytes)} PCM bytes (Little Endian) for Hume.") # No byteswap needed
+
+                    pcm_b64 = base64.b64encode(pcm_bytes).decode('utf-8') # Send the original PCM bytes
+
                     hume_message = {
                         "type": "audio_input",
-                        "data": pcm_b64 
+                        "data": pcm_b64
                     }
                     await hume_ws.send(json.dumps(hume_message))
                 except Exception as e:
