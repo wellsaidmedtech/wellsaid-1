@@ -86,15 +86,17 @@ async def root():
 @app.post("/twilio/incoming_call")
 async def handle_incoming_call(request: Request):
     """
-    Handles incoming Twilio calls.
+    Handles incoming Twilio calls. WORKAROUND: Creates a temporary config via REST API first.
     1. Identifies the patient.
-    2. Constructs a system prompt for Hume EVI.
-    3. Connects to Hume EVI via WebSocket.
-    4. Sends initial settings to Hume.
-    5. Responds to Twilio with TwiML to start audio streaming.
+    2. Constructs a system prompt.
+    3. Creates a temporary Hume config via REST API with the prompt and voice.
+    4. Connects to Hume EVI via WebSocket using the temporary config ID.
+    5. Sends initial audio settings to Hume.
+    6. Responds to Twilio with TwiML to start audio streaming.
     """
     log.info("-" * 30)
     log.info(">>> Twilio Incoming Call Webhook Received <<<")
+    temp_config_id = None # Initialize in case of early errors
 
     try:
         form_data = await request.form()
@@ -120,10 +122,8 @@ async def handle_incoming_call(request: Request):
         log.info(f"--- Identified Patient: {patient_data.get('name', 'N/A')} (ID: {patient_data.get('id', 'N/A')}) ---")
 
         # --- 2. Construct System Prompt ---
-        # Format conditions and medications for readability in the prompt
         conditions_list = ", ".join(patient_data.get('conditions', ['N/A']))
         medications_list = ", ".join(patient_data.get('medications', ['N/A']))
-
         system_prompt = f"""
         **Persona:**
         You are 'Sam', an empathetic AI medical assistant from WellSaid Clinic performing a routine post-discharge check-in call.
@@ -151,72 +151,102 @@ async def handle_incoming_call(request: Request):
         """
         log.info("--- Generated Enhanced System Prompt ---")
 
-        # --- 3. Connect to Hume EVI ---
-        log.info(f"--- Attempting WebSocket connection to Hume EVI for CallSid: {call_sid} ---")
-        uri_with_key = f"{HUME_EVI_WS_URI}?apiKey={HUME_API_KEY}"
+        # --- 3. Create Temporary Hume Config via REST API ---
+        log.info(f"--- Creating temporary Hume config for CallSid: {call_sid} ---")
+        rest_api_url = "https://api.hume.ai/v0/evi/configs"
+        headers = {
+            "X-Hume-Api-Key": HUME_API_KEY,
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "name": f"Call_{call_sid}", # Give it a unique temporary name
+            "evi_version": "3",
+            "prompt": {
+                "text": system_prompt # Inject dynamic prompt here
+            },
+            "voice": {
+                "id": "97fe9008-8584-4d56-8453-bd8c7ead3663", # Your desired voice
+                "provider": "HUME_AI"
+            },
+            # Add other base settings if needed, e.g., language model
+            # "language_model": {
+            #    "model_provider": "ANTHROPIC",
+            #    "model_resource": "claude-3-haiku-20240307", # Example
+            #    "temperature": 0.7
+            # }
+        }
+        response = requests.post(rest_api_url, headers=headers, json=payload)
+        response.raise_for_status() # Check for HTTP errors (4xx, 5xx)
+
+        config_data = response.json()
+        temp_config_id = config_data.get("id")
+
+        if not temp_config_id:
+             log.error("--- FAILED to create Hume config: ID missing in response. ---")
+             raise Exception("Hume config creation failed, ID missing.")
+
+        log.info(f"--- Temporary Hume config created successfully. ID: {temp_config_id} ---")
+
+        # --- 4. Connect to Hume EVI via WebSocket using the temporary config ID ---
+        log.info(f"--- Attempting WebSocket connection to Hume EVI using config_id: {temp_config_id} ---")
+        uri_with_key = f"{HUME_API_WS_URI}?apiKey={HUME_API_KEY}" # Check variable name, maybe HUME_EVI_WS_URI
         hume_websocket = await websockets.connect(uri_with_key)
         log.info("--- WebSocket connection to Hume EVI established. ---")
 
-        # Store connection details immediately
         active_connections[call_sid] = {
             "hume_ws": hume_websocket,
             "twilio_ws": None,
             "stream_sid": None,
-            "resample_state": None # Initialize resampler state
+            "resample_state": None,
+            "temp_config_id": temp_config_id # Store for potential cleanup later
         }
 
-        # --- Send Initial Settings to Hume ---
+        # --- 5. Send Initial *Audio* Settings via WebSocket ---
+        # We use the temp_config_id, but still need to specify the audio format for the session
         initial_message = {
             "type": "session_settings",
-            # "config_id": HUME_CONFIG_ID,
-            "evi_version": "3",  # <-- ADD THIS LINE
-            "prompt": { "text": system_prompt },
+            "config_id": temp_config_id, # Use the ID from the REST API call
             "audio": {
-                "encoding": "linear16",
-                "sample_rate": 8000,
-                "channels": 1
-            },
-            "voice": {
-                "id": "97fe9008-8584-4d56-8453-bd8c7ead3663", # Your voice ID
-                "provider": "HUME_AI" # <-- ADD THIS LINE
+                "encoding": "linear16", # Hume expects 16-bit little-endian PCM input
+                "sample_rate": 8000,    # Match Twilio's stream rate
+                "channels": 1           # Mono audio
             }
+            # NO "prompt", "voice", or "evi_version" needed here - they are in the config
         }
         await hume_websocket.send(json.dumps(initial_message))
-        log.info("--- Sent initial configuration/prompt to Hume EVI (including EVI version and voice provider) ---") # Updated log message
+        log.info(f"--- Sent session_settings using temp_config_id: {temp_config_id} ---")
 
         # Start the background task to listen for messages *from* Hume
         asyncio.create_task(listen_to_hume(call_sid))
 
-    except websockets.exceptions.InvalidURI:
-         log.error(f"--- FAILED to connect to Hume: Invalid WebSocket URI ({HUME_EVI_WS_URI}) ---")
-         # Respond with error TwiML
-         response = VoiceResponse(); response.say("AI connect error: bad address."); response.hangup()
-         return Response(content=str(response), media_type="text/xml")
+    # --- Exception Handling for REST and WebSocket ---
+    except requests.exceptions.RequestException as e:
+        log.error(f"--- FAILED during Hume config creation or connection setup for {call_sid}: {e} ---")
+        # Ensure cleanup if temp_config_id was created before failure
+        # (Could add a check here to delete the config if temp_config_id exists)
+        response_twiml = VoiceResponse(); response_twiml.say("Error setting up AI configuration."); response_twiml.hangup()
+        return Response(content=str(response_twiml), media_type="text/xml")
     except websockets.exceptions.WebSocketException as e:
-        log.error(f"--- FAILED to connect WebSocket to Hume EVI: {e} ---")
-        # Clean up if connection partially stored
-        await cleanup_connection(call_sid, "Hume connection failed")
-        response = VoiceResponse(); response.say("Sorry, could not connect to the AI service."); response.hangup()
-        return Response(content=str(response), media_type="text/xml")
-    except Exception as e: # Catch other potential errors during setup
+        log.error(f"--- FAILED during WebSocket connection for {call_sid}: {e} ---")
+        # Ensure cleanup, potentially delete temp config
+        await cleanup_connection(call_sid, "WebSocket connection failed") # cleanup might need temp_config_id now
+        response_twiml = VoiceResponse(); response_twiml.say("Sorry, could not connect to the AI service."); response_twiml.hangup()
+        return Response(content=str(response_twiml), media_type="text/xml")
+    except Exception as e: # Catch other potential errors (like missing ID)
         log.error(f"--- UNEXPECTED ERROR in handle_incoming_call for {call_sid}: {type(e).__name__} - {e} ---")
-        await cleanup_connection(call_sid, "Incoming call setup failed")
-        # Generic error for the caller
-        response = VoiceResponse(); response.say("An unexpected error occurred. Please try again later."); response.hangup()
-        return Response(content=str(response), media_type="text/xml")
+        await cleanup_connection(call_sid, "Incoming call setup failed") # cleanup might need temp_config_id
+        response_twiml = VoiceResponse(); response_twiml.say("An unexpected error occurred. Please try again later."); response_twiml.hangup()
+        return Response(content=str(response_twiml), media_type="text/xml")
 
-
-    # --- 5. Respond to Twilio to Start Streaming ---
+    # --- 6. Respond to Twilio to Start Streaming ---
     response = VoiceResponse()
     connect = Connect()
-    # Construct the WebSocket URL Twilio should connect back to
     stream_url = f"wss://{RENDER_APP_HOSTNAME}/twilio/audiostream/{call_sid}"
 
     log.info(f"--- Telling Twilio to stream audio to: {stream_url} ---")
     connect.stream(url=stream_url)
     response.append(connect)
-    # Keep the call alive while streaming. Max duration is controlled by Twilio's call limits.
-    response.pause(length=120) # Increased pause length
+    response.pause(length=120)
 
     log.info("--- Responding to Twilio with TwiML <Connect><Stream> ---")
     return Response(content=str(response), media_type="text/xml")
