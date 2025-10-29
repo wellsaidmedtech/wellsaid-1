@@ -168,7 +168,7 @@ async def handle_incoming_call(request: Request):
         # --- Send Initial Settings to Hume ---
         initial_message = {
             "type": "session_settings",
-            "config_id": HUME_CONFIG_ID,
+            # "config_id": HUME_CONFIG_ID,
             "evi_version": "3",  # <-- ADD THIS LINE
             "prompt": { "text": system_prompt },
             "audio": {
