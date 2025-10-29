@@ -180,20 +180,21 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
 # --- Background Task to Listen to Hume ---
 async def listen_to_hume(call_sid: str):
     log.info(f"--- Started listening to Hume EVI for CallSid: {call_sid} ---")
-    hume_ws = None # Initialize
+    hume_ws = None
+    # --- NEW: State variable for ratecv ---
+    ratecv_state = None
+    # ------------------------------------
     try:
-        # Ensure connection exists before proceeding
         if call_sid not in active_connections or not active_connections[call_sid].get("hume_ws"):
             log.error(f"--- listen_to_hume: Hume WS not found for {call_sid} at start. ---")
             return
         hume_ws = active_connections[call_sid]["hume_ws"]
 
         async for message_str in hume_ws:
-            # Check again if connection still valid before processing
             if call_sid not in active_connections:
                  log.warning(f"--- listen_to_hume: Connection for {call_sid} cleaned up elsewhere. Exiting task. ---")
                  break
-            
+
             hume_data = json.loads(message_str)
             hume_type = hume_data.get("type")
 
@@ -203,60 +204,70 @@ async def listen_to_hume(call_sid: str):
             if hume_type == "audio_output":
                 log.info("--- Hume Event: 'audio_output' ---")
 
-                # Check if Twilio connection is still active and ready
                 conn_details = active_connections.get(call_sid)
                 if conn_details and conn_details.get("twilio_ws") and conn_details.get("stream_sid"):
                     twilio_ws = conn_details["twilio_ws"]
                     stream_sid = conn_details["stream_sid"]
 
                     try:
-                        # --- NEW: Parse WAV and transcode ---
                         wav_b64 = hume_data["data"]
                         wav_bytes = base64.b64decode(wav_b64)
 
-                        # Use BytesIO to treat the bytes as an in-memory file
+                        pcm_bytes_48k = b'' # Initialize
+                        input_rate = 48000 # Default assumption
+
                         with io.BytesIO(wav_bytes) as wav_file_like:
                             with wave.open(wav_file_like, 'rb') as wav_reader:
-                                # Verify format (optional but good practice)
-                                if wav_reader.getnchannels() != 1 or wav_reader.getsampwidth() != 2 or wav_reader.getframerate() != 8000:
-                                    log.warning(f"Unexpected WAV format from Hume: C={wav_reader.getnchannels()}, W={wav_reader.getsampwidth()}, R={wav_reader.getframerate()}")
-                                    # Continue anyway, audioop might handle it or fail
+                                n_channels = wav_reader.getnchannels()
+                                samp_width = wav_reader.getsampwidth()
+                                input_rate = wav_reader.getframerate() # Get actual rate from WAV header
 
-                                pcm_bytes = wav_reader.readframes(wav_reader.getnframes())
-                                # log.info(f"    Read {len(pcm_bytes)} PCM bytes from Hume WAV.")
+                                if n_channels != 1 or samp_width != 2:
+                                    log.warning(f"Unexpected WAV format from Hume: C={n_channels}, W={samp_width}, R={input_rate}")
+                                    # Attempt to continue if possible, otherwise skip chunk
+                                    if samp_width != 2: continue # Cannot process non-16-bit easily
 
-                        # Transcode the extracted PCM to mulaw
-                        mulaw_bytes = audioop.lin2ulaw(pcm_bytes, 2)
+                                pcm_bytes_48k = wav_reader.readframes(wav_reader.getnframes())
+                                # log.info(f"    Read {len(pcm_bytes_48k)} PCM bytes ({input_rate}Hz) from Hume WAV.")
+
+                        if not pcm_bytes_48k: continue # Skip if reading failed
+
+                        # --- NEW: Resample using ratecv ---
+                        output_rate = 8000
+                        # audioop.ratecv(fragment, width, nchannels, inrate, outrate, state[, weightA[, weightB]])
+                        pcm_bytes_8k, ratecv_state = audioop.ratecv(pcm_bytes_48k, 2, 1, input_rate, output_rate, ratecv_state)
+                        log.info(f"    Resampled {len(pcm_bytes_48k)} bytes ({input_rate}Hz) to {len(pcm_bytes_8k)} bytes ({output_rate}Hz).")
+                        # ----------------------------------
+
+                        # Transcode the *resampled* 8kHz PCM to mulaw
+                        mulaw_bytes = audioop.lin2ulaw(pcm_bytes_8k, 2)
                         # log.info(f"    Converted to {len(mulaw_bytes)} mulaw bytes for Twilio.")
 
                         mulaw_b64 = base64.b64encode(mulaw_bytes).decode('utf-8')
-                        # ------------------------------------
 
                         twilio_media_message = {
                             "event": "media",
                             "streamSid": stream_sid,
                             "media": { "payload": mulaw_b64 }
                         }
-                        # Check if Twilio WS is still open before sending
                         if not twilio_ws.client_state == websockets.protocol.State.CLOSED:
                              await twilio_ws.send_text(json.dumps(twilio_media_message))
                         else:
                              log.warning(f"--- Hume sent audio, but Twilio WS for {call_sid} was already closed. ---")
-                             break # Stop listening if Twilio is gone
+                             break
 
                     except wave.Error as e:
                          log.error(f"    ERROR parsing Hume WAV data: {e}")
+                    except audioop.error as e: # Catch audioop specific errors
+                         log.error(f"    ERROR during audioop processing: {e}")
                     except Exception as e:
                          log.error(f"    ERROR during Hume->Twilio transcoding or sending: {type(e).__name__} - {e}")
 
                 else:
                     log.warning(f"--- Hume sent audio, but Twilio WS/stream_sid not ready for {call_sid}. Skipping. ---")
-                    # If Twilio never connected or stream_sid wasn't received, we might end up here.
 
             elif hume_type == "error":
                 log.error(f"--- Hume EVI Error (Full Message): {hume_data} ---")
-                # Consider closing the connection if Hume sends a critical error
-                # break
 
     except websockets.exceptions.ConnectionClosedOK:
         log.info(f"--- Hume WebSocket closed normally for {call_sid}. ---")
