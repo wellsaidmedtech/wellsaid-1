@@ -149,22 +149,27 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
                 log.info("--- Twilio 'media' event ---")
                 payload = data["media"]["payload"]
                 
-                try: # Add try/except for debugging
+                try: 
                     mulaw_bytes = base64.b64decode(payload)
-                    log.info(f"    Received {len(mulaw_bytes)} mulaw bytes from Twilio.") # <-- DEBUG LOG
+                    log.info(f"    Received {len(mulaw_bytes)} mulaw bytes from Twilio.") 
                     
-                    pcm_bytes = audioop.ulaw2lin(mulaw_bytes, 2) # 2 = 16-bit output
-                    log.info(f"    Converted to {len(pcm_bytes)} PCM bytes for Hume.") # <-- DEBUG LOG
+                    # Convert to PCM (likely little-endian)
+                    pcm_bytes_native = audioop.ulaw2lin(mulaw_bytes, 2) 
                     
-                    pcm_b64 = base64.b64encode(pcm_bytes).decode('utf-8')
+                    # --- NEW: Swap to Big-Endian for Hume ---
+                    pcm_bytes_big_endian = audioop.byteswap(pcm_bytes_native, 2) # 2 = 16-bit width
+                    log.info(f"    Converted to {len(pcm_bytes_big_endian)} PCM bytes (Big Endian) for Hume.") 
+                    # ----------------------------------------
+                    
+                    pcm_b64 = base64.b64encode(pcm_bytes_big_endian).decode('utf-8') # Send swapped bytes
                     
                     hume_message = {
                         "type": "audio_input",
-                        "data": pcm_b64 # Send linear16 base64
+                        "data": pcm_b64 
                     }
                     await hume_ws.send(json.dumps(hume_message))
                 except Exception as e:
-                    log.error(f"    ERROR during Twilio->Hume transcoding: {e}") # <-- DEBUG LOG
+                    log.error(f"    ERROR during Twilio->Hume transcoding: {e}")
 
             elif event == "stop":
                 log.info(f"--- Twilio 'stop' message received for CallSid: {call_sid} ---")
