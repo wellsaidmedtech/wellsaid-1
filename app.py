@@ -120,15 +120,36 @@ async def handle_incoming_call(request: Request):
         log.info(f"--- Identified Patient: {patient_data.get('name', 'N/A')} (ID: {patient_data.get('id', 'N/A')}) ---")
 
         # --- 2. Construct System Prompt ---
-        # TODO: Refine this prompt later for better persona/context
+        # Format conditions and medications for readability in the prompt
+        conditions_list = ", ".join(patient_data.get('conditions', ['N/A']))
+        medications_list = ", ".join(patient_data.get('medications', ['N/A']))
+
         system_prompt = f"""
-        You are 'Sam', an empathetic AI medical assistant from WellSaid Clinic.
-        Your primary goal is calling patient {patient_data['name']} for a post-discharge check-in.
-        Be kind, patient, and clear. Start by introducing yourself and asking if it's a good time.
-        Your goal is to understand their health status and identify if they need clinical follow-up.
-        DO NOT provide medical advice.
+        **Persona:**
+        You are 'Sam', an empathetic AI medical assistant from WellSaid Clinic performing a routine post-discharge check-in call.
+        Your tone should be warm, caring, patient, and professional. Use clear, simple language.
+        Your primary goal is to assess the patient's current well-being, adherence to discharge instructions, and identify any urgent needs requiring clinical follow-up.
+        **DO NOT provide medical advice, diagnoses, or treatment recommendations.** If asked for advice, politely redirect the patient to contact their doctor or the clinic.
+
+        **Patient Context:**
+        * **Name:** {patient_data.get('name', 'the patient')}
+        * **Relevant Conditions:** {conditions_list}
+        * **Current Medications:** {medications_list}
+
+        **Conversation Flow:**
+        1.  **Introduction:** Introduce yourself ("Hi, this is Sam calling from WellSaid Clinic...") and verify you're speaking with {patient_data.get('name', 'the patient')}. Ask if this is a good time to talk for a few minutes about their recovery.
+        2.  **General Well-being:** Ask how they are feeling overall since being discharged.
+        3.  **Specific Inquiry (Use Context):** Ask about how they are managing their specific conditions (e.g., "How have your blood sugar levels been since you started the Metformin again?" or "Have you experienced any side effects from the Lisinopril?"). **Acknowledge their known conditions and medications when relevant.**
+        4.  **Adherence Check:** Ask if they've been able to take their medications ({medications_list}) as prescribed and follow any specific discharge instructions.
+        5.  **Identify Concerns:** Ask if they have any specific concerns, new symptoms, or questions they'd like to pass on to their doctor.
+        6.  **Closing:** Summarize briefly (e.g., "Okay, it sounds like things are generally going well, but I'll make a note about [specific concern] for your doctor."). Explain the next steps (e.g., "Your doctor will review this, and someone from the clinic will reach out if needed."). Thank them for their time.
+
+        **Important:**
+        * Listen actively and respond empathetically.
+        * If the patient mentions a severe symptom (e.g., chest pain, difficulty breathing, severe confusion), instruct them to call 911 or go to the nearest emergency room immediately, and state you will also alert the clinic.
+        * Keep the call concise, aiming for 2-5 minutes.
         """
-        log.info("--- Generated System Prompt ---")
+        log.info("--- Generated Enhanced System Prompt ---")
 
         # --- 3. Connect to Hume EVI ---
         log.info(f"--- Attempting WebSocket connection to Hume EVI for CallSid: {call_sid} ---")
@@ -144,19 +165,24 @@ async def handle_incoming_call(request: Request):
             "resample_state": None # Initialize resampler state
         }
 
-        # --- 4. Send Initial Settings to Hume ---
+        # --- Send Initial Settings to Hume ---
         initial_message = {
             "type": "session_settings",
             "config_id": HUME_CONFIG_ID,
+            "evi_version": "3",  # <-- ADD THIS LINE
             "prompt": { "text": system_prompt },
             "audio": {
-                "encoding": "linear16", # Hume expects 16-bit little-endian PCM
-                "sample_rate": 8000,    # Match Twilio's stream rate
-                "channels": 1           # Mono audio
+                "encoding": "linear16",
+                "sample_rate": 8000,
+                "channels": 1
+            },
+            "voice": {
+                "id": "97fe9008-8584-4d56-8453-bd8c7ead3663", # Your voice ID
+                "provider": "HUME_AI" # <-- ADD THIS LINE
             }
         }
         await hume_websocket.send(json.dumps(initial_message))
-        log.info("--- Sent initial configuration/prompt to Hume EVI ---")
+        log.info("--- Sent initial configuration/prompt to Hume EVI (including EVI version and voice provider) ---") # Updated log message
 
         # Start the background task to listen for messages *from* Hume
         asyncio.create_task(listen_to_hume(call_sid))
