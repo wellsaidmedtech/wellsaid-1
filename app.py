@@ -206,11 +206,6 @@ async def handle_incoming_call(request: Request):
         initial_message = {
             "type": "session_settings",
             "config_id": temp_config_id, # Use the ID from the REST API call
-            "audio": {
-                "encoding": "linear16", # Hume expects 16-bit little-endian PCM input
-                "sample_rate": 8000,    # Match Twilio's stream rate
-                "channels": 1           # Mono audio
-            }
             # NO "prompt", "voice", or "evi_version" needed here - they are in the config
         }
         await hume_websocket.send(json.dumps(initial_message))
