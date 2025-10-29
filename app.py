@@ -1,6 +1,6 @@
 import os
 import requests # <-- Import the requests library
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 # We are no longer importing HumeClient for this test
 
 app = Flask(__name__)
