@@ -7,12 +7,10 @@ from flask import Flask, jsonify, request
 from flask_sock import Sock # For handling WebSocket connections IN Flask
 from twilio.twiml.voice_response import VoiceResponse, Connect # For TwiML Stream verb
 from twilio.rest import Client as TwilioClient # To potentially interact with Twilio API later
-from asgiref.wsgi import WsgiToAsgi
 
 
 app = Flask(__name__)
 sock = Sock(app) # Initialize flask-sock
-asgi_app = WsgiToAsgi(app)
 
 # --- Load Twilio Credentials (Optional but good practice) ---
 # You might need these later to interact with Twilio's API directly
