@@ -194,7 +194,7 @@ async def listen_to_hume(call_sid: str):
                 
                 if call_sid in active_connections and active_connections[call_sid].get("twilio_ws") and active_connections[call_sid].get("stream_sid"):
                     twilio_ws = active_connections[call_sid]["twilio_ws"]
-                    stream_.sid = active_connections[call_sid]["stream_sid"]
+                    stream_sid = active_connections[call_sid]["stream_sid"]
                     
                     pcm_b64 = hume_data["data"]
                     pcm_bytes = base64.b64decode(pcm_b64)
