@@ -146,18 +146,25 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
                 log.info(f"--- Twilio 'start' message received, Stream SID: {stream_sid} ---")
             
             elif event == "media":
-                log.info("--- Twilio 'media' event ---") # <-- UNCOMMENTED
+                log.info("--- Twilio 'media' event ---")
                 payload = data["media"]["payload"]
                 
-                mulaw_bytes = base64.b64decode(payload)
-                pcm_bytes = audioop.ulaw2lin(mulaw_bytes, 2)
-                pcm_b64 = base64.b64encode(pcm_bytes).decode('utf-8')
-                
-                hume_message = {
-                    "type": "audio_input",
-                    "data": pcm_b64
-                }
-                await hume_ws.send(json.dumps(hume_message))
+                try: # Add try/except for debugging
+                    mulaw_bytes = base64.b64decode(payload)
+                    log.info(f"    Received {len(mulaw_bytes)} mulaw bytes from Twilio.") # <-- DEBUG LOG
+                    
+                    pcm_bytes = audioop.ulaw2lin(mulaw_bytes, 2) # 2 = 16-bit output
+                    log.info(f"    Converted to {len(pcm_bytes)} PCM bytes for Hume.") # <-- DEBUG LOG
+                    
+                    pcm_b64 = base64.b64encode(pcm_bytes).decode('utf-8')
+                    
+                    hume_message = {
+                        "type": "audio_input",
+                        "data": pcm_b64 # Send linear16 base64
+                    }
+                    await hume_ws.send(json.dumps(hume_message))
+                except Exception as e:
+                    log.error(f"    ERROR during Twilio->Hume transcoding: {e}") # <-- DEBUG LOG
 
             elif event == "stop":
                 log.info(f"--- Twilio 'stop' message received for CallSid: {call_sid} ---")
@@ -196,20 +203,26 @@ async def listen_to_hume(call_sid: str):
                     twilio_ws = active_connections[call_sid]["twilio_ws"]
                     stream_sid = active_connections[call_sid]["stream_sid"]
                     
-                    pcm_b64 = hume_data["data"]
-                    pcm_bytes = base64.b64decode(pcm_b64)
-                    mulaw_bytes = audioop.lin2ulaw(pcm_bytes, 2)
-                    mulaw_b64 = base64.b64encode(mulaw_bytes).decode('utf-8')
-                    
-                    twilio_media_message = {
-                        "event": "media",
-                        "streamSid": stream_sid,
-                        "media": {
-                            "payload": mulaw_b64
+                    try:
+                        pcm_b64 = hume_data["data"]
+                        pcm_bytes = base64.b64decode(pcm_b64)
+                        log.info(f"    Received {len(pcm_bytes)} PCM bytes from Hume.") # <-- DEBUG LOG
+                        
+                        mulaw_bytes = audioop.lin2ulaw(pcm_bytes, 2) # 2 = 16-bit input
+                        log.info(f"    Converted to {len(mulaw_bytes)} mulaw bytes for Twilio.") # <-- DEBUG LOG
+
+                        mulaw_b64 = base64.b64encode(mulaw_bytes).decode('utf-8')
+
+                        twilio_media_message = {
+                            "event": "media",
+                            "streamSid": stream_sid, # Use the stream_sid we saved
+                            "media": {
+                                "payload": mulaw_b64 # Send the transcoded mulaw audio
+                            }
                         }
-                    }
-                    await twilio_ws.send_text(json.dumps(twilio_media_message))
-                
+                        await twilio_ws.send_text(json.dumps(twilio_media_message))
+                    except Exception as e:
+                         log.error(f"    ERROR during Hume->Twilio transcoding: {e}") # <-- DEBUG LOG
                 else:
                     log.warning("--- Hume sent audio, but Twilio WS not ready. Skipping. ---")
             
