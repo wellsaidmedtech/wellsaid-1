@@ -86,12 +86,11 @@ async def root():
 @app.post("/twilio/incoming_call")
 async def handle_incoming_call(request: Request):
     """
-    Handles incoming Twilio calls using the WebSocket override method.
+    Handles incoming Twilio calls using the "Variables" override method.
     1. Identifies the patient.
-    2. Constructs a system prompt for Hume EVI.
-    3. Connects to Hume EVI via WebSocket.
-    4. Sends session_settings overriding prompt, voice, and audio.
-    5. Responds to Twilio with TwiML to start audio streaming.
+    2. Connects to Hume EVI via WebSocket, passing config_id in the URL.
+    3. Sends session_settings with dynamic *variables* for the prompt.
+    4. Responds to Twilio with TwiML to start audio streaming.
     """
     log.info("-" * 30)
     log.info(">>> Twilio Incoming Call Webhook Received <<<")
@@ -111,94 +110,78 @@ async def handle_incoming_call(request: Request):
         # --- 1. Identify Patient ---
         patient_data = get_patient_info(from_number)
         if not patient_data:
-            log.warning(f"--- WARNING: Could not identify patient from {from_number}. Rejecting call. ---")
-            response = VoiceResponse()
-            response.say("Sorry, we could not identify your phone number with our records.", voice='alice')
-            response.hangup()
+            # ... (Handle unknown patient) ...
+            response = VoiceResponse(); response.say("Sorry, we could not identify your number."); response.hangup()
             return Response(content=str(response), media_type="text/xml")
 
-        log.info(f"--- Identified Patient: {patient_data.get('name', 'N/A')} (ID: {patient_data.get('id', 'N/A')}) ---")
+        log.info(f"--- Identified Patient: {patient_data.get('name', 'N/A')} ---")
 
-        # --- 2. Construct System Prompt ---
-        conditions_list = ", ".join(patient_data.get('conditions', ['N/A']))
-        medications_list = ", ".join(patient_data.get('medications', ['N/A']))
-        system_prompt = f"""
-        **Persona:**
-        You are 'Sam', an empathetic AI medical assistant from WellSaid Clinic...
+        # --- 2. Connect to Hume EVI (with config_id in URL) ---
+        # This loads the config that has your *template prompt*
+        uri_with_key_and_config = f"{HUME_EVI_WS_URI}?apiKey={HUME_API_KEY}&config_id={HUME_CONFIG_ID}"
+        log.info(f"--- Connecting to WebSocket URL (with config_id): {HUME_EVI_WS_URI}?apiKey=[REDACTED]&config_id={HUME_CONFIG_ID} ---")
         
-        **Patient Context:**
-        * **Name:** {patient_data.get('name', 'the patient')}
-        * **Relevant Conditions:** {conditions_list}
-        * **Current Medications:** {medications_list}
-        
-        **Conversation Flow:**
-        1.  **Introduction:** Introduce yourself ("Hi, this is Sam...")...
-        
-        (Your full prompt text here)
-        """
-        log.info("--- Generated Enhanced System Prompt ---")
-
-        # --- 3. Connect to Hume EVI ---
-        log.info(f"--- Attempting WebSocket connection to Hume EVI for CallSid: {call_sid} ---")
-        uri_with_key = f"{HUME_EVI_WS_URI}?apiKey={HUME_API_KEY}"
-        hume_websocket = await websockets.connect(uri_with_key)
+        hume_websocket = await websockets.connect(uri_with_key_and_config)
         log.info("--- WebSocket connection to Hume EVI established. ---")
 
-        # Store connection details immediately
+        # Store connection details
         active_connections[call_sid] = {
-            "hume_ws": hume_websocket,
-            "twilio_ws": None,
-            "stream_sid": None,
-            "resample_state": None # Initialize resampler state
+            "hume_ws": hume_websocket, "twilio_ws": None, "stream_sid": None, "resample_state": None
         }
 
-        # --- 4. Send Initial Settings to Hume (Override Method) ---
+        # --- 3. Send Initial Settings (with VARIABLES) ---
+        conditions_list = ", ".join(patient_data.get('conditions', ['N/A']))
+        medications_list = ", ".join(patient_data.get('medications', ['N/A']))
+
         initial_message = {
             "type": "session_settings",
-            "evi_version": "3", # 
-            "prompt": { "text": system_prompt }, # Override the prompt
-            "audio": {
-                "encoding": "linear16", # Hume expects 16-bit little-endian PCM
-                "sample_rate": 8000,    # Match Twilio's stream rate
-                "channels": 1           # Mono audio
+            # We are NOT sending "prompt" anymore
+            "variables": { # <-- NEW: Use the "variables" key
+                "patient_name": patient_data.get('name', 'the patient'),
+                "conditions": conditions_list,
+                "medications": medications_list
             },
-            "voice": { # Override the voice
+            "audio": { # We still need to send this for our use case
+                "encoding": "linear16",
+                "sample_rate": 8000,
+                "channels": 1
+            },
+            # We can still override the voice if we want
+            "voice": {
                 "id": "97fe9008-8584-4d56-8453-bd8c7ead3663",
                 "provider": "HUME_AI"
-            }
+            },
+            "evi_version": "3" # Let's keep this to ensure we use the right API version
         }
         await hume_websocket.send(json.dumps(initial_message))
-        log.info("--- Sent initial configuration/prompt to Hume EVI (Override method) ---")
+        log.info("--- Sent session_settings (using variables) to Hume EVI ---")
 
-        # Start the background task to listen for messages *from* Hume
+        # Start the background task
         asyncio.create_task(listen_to_hume(call_sid))
 
+    # ... (Exception handling) ...
     except websockets.exceptions.WebSocketException as e:
         log.error(f"--- FAILED to connect WebSocket to Hume EVI: {e} ---")
         await cleanup_connection(call_sid, "Hume connection failed")
         response = VoiceResponse(); response.say("Sorry, could not connect to the AI service."); response.hangup()
         return Response(content=str(response), media_type="text/xml")
-    except Exception as e: # Catch other potential errors during setup
+    except Exception as e:
         log.error(f"--- UNEXPECTED ERROR in handle_incoming_call for {call_sid}: {type(e).__name__} - {e} ---")
         await cleanup_connection(call_sid, "Incoming call setup failed")
-        response = VoiceResponse(); response.say("An unexpected error occurred. Please try again later."); response.hangup()
+        response = VoiceResponse(); response.say("An unexpected error occurred."); response.hangup()
         return Response(content=str(response), media_type="text/xml")
 
 
-    # --- 5. Respond to Twilio to Start Streaming ---
+    # --- 4. Respond to Twilio ---
     response = VoiceResponse()
     connect = Connect()
-    # Construct the WebSocket URL Twilio should connect back to
     stream_url = f"wss://{RENDER_APP_HOSTNAME}/twilio/audiostream/{call_sid}"
-
     log.info(f"--- Telling Twilio to stream audio to: {stream_url} ---")
     connect.stream(url=stream_url)
     response.append(connect)
-    response.pause(length=120) 
-
+    response.pause(length=120)
     log.info("--- Responding to Twilio with TwiML <Connect><Stream> ---")
     return Response(content=str(response), media_type="text/xml")
-
 
 # --- WebSocket Endpoint for Twilio Audio Stream ---
 @app.websocket("/twilio/audiostream/{call_sid}")
