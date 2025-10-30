@@ -61,15 +61,25 @@ DUMMY_PATIENT_DB = {
 }
 log.info(f"--- Loaded dummy patient 'Lon Kai' with MRN: {patient_mrn} ---")
 
-# --- Lookup function that searches by phone ---
+# --- Patient Lookup Functions ---
 def get_patient_info_by_phone(phone_number: str) -> dict | None:
     """Looks up patient data by *searching* for their phone number."""
     if not phone_number:
         return None
     for mrn, data in DUMMY_PATIENT_DB.items():
         if data.get("phone_number") == phone_number:
-            return {"mrn": mrn, **data}
+            return {"mrn": mrn, **data} # Return data *with* its key
     return None
+
+def get_patient_info_by_mrn(mrn: str) -> dict | None:
+    """Looks up patient data directly by their MRN (the key)."""
+    if not mrn:
+        return None
+    data = DUMMY_PATIENT_DB.get(mrn)
+    if data:
+        return {"mrn": mrn, **data}
+    return None
+# ---------------------------------
 
 # --- WebSocket Connection Management ---
 active_connections = {} 
@@ -101,6 +111,7 @@ class StartCallRequest(BaseModel):
 async def start_outbound_call(call_request: StartCallRequest):
     """
     Triggers an outbound call to a patient.
+    Passes the patient's MRN in the webhook URL.
     """
     patient_number = call_request.patient_phone_number
     log.info(f"--- Received request to call patient at: {patient_number} ---")
@@ -109,15 +120,22 @@ async def start_outbound_call(call_request: StartCallRequest):
         log.error("--- Cannot place call: Twilio client is not initialized. ---")
         raise HTTPException(status_code=500, detail="Twilio client not initialized. Check server logs.")
 
+    # 1. Find the patient by phone to get their MRN
     patient_data = get_patient_info_by_phone(patient_number)
     if not patient_data:
         log.error(f"--- Cannot place call: Patient number {patient_number} not found in database. ---")
         raise HTTPException(status_code=404, detail="Patient phone number not found in database.")
+    
+    patient_mrn = patient_data.get("mrn")
+    if not patient_mrn:
+        log.error(f"--- Cannot place call: Patient {patient_number} has no MRN. ---")
+        raise HTTPException(status_code=500, detail="Patient data is corrupt, no MRN found.")
 
     try:
-        # --- THIS LINE IS NOW CORRECTED ---
-        webhook_url = f"https://{RENDER_APP_HOSTNAME}/twilio/incoming_call"
-        # ----------------------------------
+        # --- CRITICAL CHANGE ---
+        # We add the MRN as a query parameter to the webhook URL
+        webhook_url = f"https://{RENDER_APP_HOSTNAME}/twilio/incoming_call?mrn={patient_mrn}"
+        # -----------------------
         
         log.info(f"--- Initiating outbound call via Twilio to {patient_number} ---")
         log.info(f"--- Twilio will call this webhook on answer: {webhook_url} ---")
@@ -134,7 +152,8 @@ async def start_outbound_call(call_request: StartCallRequest):
             content={
                 "message": "Call initiated successfully.",
                 "patient_called": patient_number,
-                "call_sid": call.sid
+                "call_sid": call.sid,
+                "mrn_sent": patient_mrn
             }
         )
     except Exception as e:
@@ -145,9 +164,8 @@ async def start_outbound_call(call_request: StartCallRequest):
 @app.post("/twilio/incoming_call")
 async def handle_incoming_call(request: Request):
     """
-    This webhook is hit by Twilio for:
-    1. NEW Inbound calls to your Twilio number.
-    2. OUTBOUND calls that the patient has *answered*.
+    This webhook is hit by Twilio when the outbound call is answered.
+    It now *gets the patient's MRN from the URL* instead of the 'From' number.
     """
     log.info("-" * 30)
     log.info(">>> Twilio Call Webhook Received (Inbound or Outbound-Answered) <<<")
@@ -155,21 +173,31 @@ async def handle_incoming_call(request: Request):
     try:
         form_data = await request.form()
         call_sid = form_data.get('CallSid')
-        from_number = form_data.get('From')
+        from_number = form_data.get('From') # We still log this, but don't use it for lookup
+        
+        # --- CRITICAL CHANGE ---
+        # Get the MRN we passed in the URL from the /api/start_call function
+        mrn = request.query_params.get('mrn')
+        # -----------------------
 
-        if not call_sid or not from_number:
-             log.error("--- ERROR: Missing CallSid or From number in Twilio request. ---")
+        if not call_sid:
+             log.error("--- ERROR: Missing CallSid in Twilio request. ---")
              raise HTTPException(status_code=400, detail="Missing required call information")
+        if not mrn:
+             log.error(f"--- ERROR: Missing MRN in webhook URL for CallSid: {call_sid}. ---")
+             raise HTTPException(status_code=400, detail="Missing MRN in webhook query parameters.")
 
         log.info(f"  Call SID: {call_sid}")
         log.info(f"  Call From (Patient Number): {from_number}")
+        log.info(f"  Looking up patient by MRN: {mrn}")
 
-        # --- 1. Identify Patient ---
-        patient_data = get_patient_info_by_phone(from_number)
+        # --- 1. Identify Patient (UPDATED: Use new MRN lookup) ---
+        patient_data = get_patient_info_by_mrn(mrn)
         if not patient_data:
-            log.warning(f"--- WARNING: Could not identify patient from {from_number}. Rejecting call. ---")
+            # This should almost never happen if the /api/start_call logic is correct
+            log.error(f"--- CRITICAL ERROR: Could not find patient for MRN {mrn}. ---")
             response = VoiceResponse()
-            response.say("Sorry, we could not identify your phone number with our records. Please call our main office.", voice='alice')
+            response.say("Sorry, we had a system error and could not retrieve your records. Please call our main office.", voice='alice')
             response.hangup()
             return Response(content=str(response), media_type="text/xml")
 
@@ -313,7 +341,7 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
 
 
 # --- Background Task to Listen to Hume ---
-@app.websocket("/listen_to_hume/{call_sid}") # This decorator is harmless but not strictly necessary for a task
+@app.websocket("/listen_to_hume/{call_sid}")
 async def listen_to_hume(call_sid: str):
     """
     Listens for messages from Hume EVI.
@@ -384,18 +412,15 @@ async def listen_to_hume(call_sid: str):
                             }
                             await twilio_ws.send_text(json.dumps(twilio_media_message))
                         except Exception as e:
-                             log.error(f"    UNEXPECTED ERROR in Hume audio processing for {call_sid}: {type(e).__name__} - {e}")
+                             log.error(f"    UNEXPECTED ERROR in Hume audio processing for {call_lid}: {type(e).__name__} - {e}")
                     else:
                         log.warning(f"--- Hume sent audio, but Twilio WS/stream_sid not ready for {call_sid}. Skipping. ---")
 
                 elif hume_type in ("user_message", "assistant_message"):
                     role = hume_data.get("message", {}).get("role", "unknown")
                     content = hume_data.get("message", {}).get("content", "")
-                    
-                    # --- THESE LINES ARE NOW CORRECTED ---
                     transcript.append(f"{role.upper()}: {content}")
                     log.info(f"    Transcript part added: {role.upper()}: {content[:30]}...")
-                    # ------------------------------------
 
                 elif hume_type == "tool_call":
                     tool_name = hume_data.get("tool_call", {}).get("name")
@@ -436,7 +461,7 @@ async def listen_to_hume(call_sid: str):
                 log.error(f"--- UNEXPECTED ERROR processing Hume message for {call_sid}: {type(e).__name__} - {e} ---")
 
     except websockets.exceptions.ConnectionClosed:
-        log.info(f"--- Hume WebSocket closed for {call_lid}. ---") # Typo fixed
+        log.info(f"--- Hume WebSocket closed for {call_sid}. ---")
     except Exception as e:
         log.error(f"--- UNEXPECTED ERROR in listen_to_hume main loop for {call_sid}: {type(e).__name__} - {e} ---")
     finally:
