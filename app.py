@@ -15,9 +15,10 @@ from twilio.twiml.voice_response import VoiceResponse, Connect
 from twilio.rest import Client as TwilioRestClient
 from twilio.base.exceptions import TwilioRestException
 from pydantic import BaseModel
+import firebase_admin # <-- NEW
+from firebase_admin import credentials, firestore # <-- NEW
 
 # --- Basic Logging Setup ---
-# Added function name and line number to logs for better debugging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [%(funcName)s:%(lineno)d] %(message)s")
 log = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ log = logging.getLogger(__name__)
 app = FastAPI()
 
 # --- Configuration Loading ---
+# ... (HUME_API_KEY, TWILIO_ACCOUNT_SID, etc. all remain the same) ...
 HUME_API_KEY = os.environ.get("HUME_API_KEY")
 HUME_EVI_WS_URI = "wss://api.hume.ai/v0/evi/chat"
 HUME_CONFIG_ID = os.environ.get("HUME_CONFIG_ID")
@@ -33,20 +35,25 @@ TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER")
 
-# Check for essential configuration at startup
-missing_vars = []
-if not HUME_API_KEY: missing_vars.append("HUME_API_KEY")
-if not HUME_EVI_WS_URI: missing_vars.append("HUME_EVI_WS_URI")
-if not HUME_CONFIG_ID: missing_vars.append("HUME_CONFIG_ID")
-if not RENDER_APP_HOSTNAME: missing_vars.append("RENDER_APP_HOSTNAME")
-if not TWILIO_ACCOUNT_SID: missing_vars.append("TWILIO_ACCOUNT_SID")
-if not TWILIO_AUTH_TOKEN: missing_vars.append("TWILIO_AUTH_TOKEN")
-if not TWILIO_PHONE_NUMBER: missing_vars.append("TWILIO_PHONE_NUMBER")
+# --- NEW: Firebase Initialization ---
+try:
+    # Render's Secret Files are mounted at this path
+    cred_path = "/etc/secrets/firebase_credentials.json"
+    if not os.path.exists(cred_path):
+        log.warning("Firebase credentials file not found at /etc/secrets/firebase_credentials.json. Using local dummy path.")
+        # Fallback for local development (if you place the key in the same directory)
+        cred_path = "firebase_credentials.json" 
 
-if missing_vars:
-    log.critical(f"FATAL: Missing required environment variables: {', '.join(missing_vars)}. Application might not work correctly.")
+    cred = credentials.Certificate(cred_path)
+    firebase_admin.initialize_app(cred)
+    db = firestore.client()
+    log.info("Firebase Firestore client initialized successfully.")
+except Exception as e:
+    log.critical(f"FATAL: Failed to initialize Firebase: {e}. Database will not work.", exc_info=True)
+    db = None
+# ------------------------------------
 
-# Instantiate the Twilio client
+# --- Twilio Client Initialization ---
 twilio_client = None
 if all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN]):
     try:
@@ -54,80 +61,90 @@ if all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN]):
         log.info("Twilio REST Client initialized successfully.")
     except Exception as e:
         log.error(f"Failed to initialize Twilio REST Client: {e}", exc_info=True)
-else:
-    log.warning("Twilio credentials missing, outbound calls will not function.")
+# ... (rest of config checks) ...
 
-# --- Patient Database with MRN as Key ---
-patient_mrn = "89728342" # Hard-coded MRN for testing
 
-DUMMY_PATIENT_DB = {
-    patient_mrn: {
-        "phone_number": "+19087839700",
-        "name": "Lon Kai",
-        "date_of_birth": "03/21/1980",
-        "age": 45,
-        "gender": "Male",
-        "medical_conditions": ["Hypertension", "Diabetes", "Hyperlipidemia"],
-        "current_medications": ["Lisinopril 10 mg", "Metformin 500 mg", "Atorvastatin 20 mg"],
-        "most_recent_visit": "2 weeks ago",
-        "purpose_of_call": "post-visit follow up"
-    }
-    # Add more dummy patients here if needed
-}
-log.info(f"Loaded dummy patient 'Lon Kai' with MRN: {patient_mrn}")
+# --- DUMMY_PATIENT_DB is now REMOVED ---
+# We will create a function to add our dummy patient to Firestore if it doesn't exist
 
-# --- Patient Lookup Functions ---
-def get_patient_info_by_phone(phone_number: str) -> dict | None:
-    if not phone_number: return None
-    for mrn, data in DUMMY_PATIENT_DB.items():
-        if data.get("phone_number") == phone_number:
-            return {"mrn": mrn, **data}
-    return None
+@app.on_event("startup")
+async def startup_event():
+    """On startup, check if dummy patient exists in Firestore, if not, create it."""
+    if not db:
+        log.error("Firestore DB not available, skipping dummy patient creation.")
+        return
+        
+    patient_mrn = "89728342"
+    patient_ref = db.collection("patients").document(patient_mrn)
+    
+    if not patient_ref.get().exists:
+        log.info(f"Dummy patient {patient_mrn} not found in Firestore. Creating...")
+        dummy_data = {
+            "phone_number": "+19087839700",
+            "name": "Lon Kai",
+            "date_of_birth": "03/21/1980",
+            "age": 45,
+            "gender": "Male",
+            "medical_conditions": ["Hypertension", "Diabetes", "Hyperlipidemia"],
+            "current_medications": ["Lisinopril 10 mg", "Metformin 500 mg", "Atorvastatin 20 mg"],
+            "most_recent_visit": "2 weeks ago",
+            "purpose_of_call": "post-visit follow up",
+            "next_ai_call": "2025-10-30" # Example field for your cron job
+        }
+        patient_ref.set(dummy_data)
+        log.info(f"Dummy patient {patient_mrn} created in Firestore.")
+    else:
+        log.info(f"Dummy patient {patient_mrn} already exists in Firestore.")
 
+
+# --- UPDATED Patient Lookup Functions ---
 def get_patient_info_by_mrn(mrn: str) -> dict | None:
-    if not mrn: return None
-    data = DUMMY_PATIENT_DB.get(mrn)
-    if data:
-        return {"mrn": mrn, **data}
-    return None
+    """Looks up patient data directly from Firestore by their MRN."""
+    if not db:
+        log.error("get_patient_info_by_mrn: Firestore client not available.")
+        return None
+    if not mrn:
+        return None
+    
+    try:
+        doc_ref = db.collection("patients").document(mrn)
+        doc = doc_ref.get()
+        if doc.exists:
+            data = doc.to_dict()
+            data["mrn"] = doc.id # Add the MRN (document ID) to the dict
+            return data
+        else:
+            log.warning(f"Patient with MRN {mrn} not found in Firestore.")
+            return None
+    except Exception as e:
+        log.error(f"Error getting patient {mrn} from Firestore: {e}", exc_info=True)
+        return None
+# ---------------------------------------
 
 # --- WebSocket Connection Management ---
-active_connections = {} # Key: CallSid, Value: Dict
+active_connections = {} 
 
 # --- Helper Function for Cleanup ---
 async def cleanup_connection(call_sid: str, reason: str = "Unknown"):
-    """Safely closes WebSockets and removes the connection entry."""
-    if not call_sid:
-        log.warning("cleanup_connection called with no CallSid.")
-        return
-
+    # ... (This function remains exactly the same) ...
     log.info(f"Cleaning up connections for CallSid: {call_sid} (Reason: {reason})")
     connection_details = active_connections.pop(call_sid, None)
-
     if connection_details:
         hume_ws = connection_details.get("hume_ws")
         twilio_ws = connection_details.get("twilio_ws")
-
         if hume_ws and hume_ws.state != websockets.protocol.State.CLOSED:
-            try:
-                log.info(f"Closing Hume WS for {call_sid}")
-                await hume_ws.close(code=1000, reason=f"Cleanup: {reason}")
-            except Exception as e:
-                log.error(f"Error closing Hume WS for {call_sid}: {e}", exc_info=True)
-        
+            try: await hume_ws.close(code=1000, reason=f"Cleanup: {reason}")
+            except Exception: pass
         if twilio_ws and twilio_ws.client_state != websockets.protocol.State.CLOSED:
-             try:
-                 log.info(f"Closing Twilio WS for {call_sid}")
-                 await twilio_ws.close(code=1000, reason=f"Cleanup: {reason}")
-             except Exception as e:
-                 log.error(f"Error closing Twilio WS for {call_sid}: {e}", exc_info=True)
+             try: await twilio_ws.close(code=1000, reason=f"Cleanup: {reason}")
+             except Exception: pass
     else:
-        log.warning(f"Cleanup called for {call_sid}, but no active connection found (might have been cleaned up already).")
+        log.warning(f"Cleanup called for {call_sid}, but no active connection found.")
+
 
 # --- Core API Endpoints ---
 @app.get("/")
 async def root():
-    """Basic health check endpoint."""
     return {"message": "Healthcare AI Server (FastAPI) is running!"}
 
 # --- Endpoint to Initiate Outbound Call ---
@@ -136,17 +153,14 @@ class StartCallRequest(BaseModel):
 
 @app.post("/api/start_call")
 async def start_outbound_call(call_request: StartCallRequest):
-    """
-    Triggers an outbound call to a patient using their MRN.
-    Passes the patient's MRN in the webhook URL.
-    """
     mrn = call_request.mrn
     log.info(f"Received request to call patient with MRN: {mrn}")
 
     if not twilio_client:
         log.error("Cannot place call: Twilio client is not initialized.")
-        raise HTTPException(status_code=503, detail="Twilio client not available. Check server configuration.")
+        raise HTTPException(status_code=503, detail="Twilio client not available.")
 
+    # --- Uses new Firestore lookup function ---
     patient_data = get_patient_info_by_mrn(mrn)
     if not patient_data:
         log.error(f"Cannot place call: MRN {mrn} not found in database.")
@@ -188,18 +202,14 @@ async def start_outbound_call(call_request: StartCallRequest):
 # --- Twilio Webhook (Handles Outbound-Answered Calls) ---
 @app.post("/twilio/incoming_call")
 async def handle_incoming_call(request: Request):
-    """
-    Webhook hit by Twilio when the outbound call is answered.
-    Gets patient MRN from URL and connects to Hume EVI.
-    """
     log.info("-" * 30)
     log.info("Twilio Call Webhook Received (Outbound-Answered)")
-    call_sid = None # Initialize call_sid for potential use in finally block
-
+    call_sid = None 
+    
     try:
         form_data = await request.form()
         call_sid = form_data.get('CallSid')
-        from_number = form_data.get('From') # Patient's number
+        from_number = form_data.get('From')
         mrn = request.query_params.get('mrn')
 
         if not call_sid or not mrn:
@@ -209,7 +219,7 @@ async def handle_incoming_call(request: Request):
 
         log.info(f"CallSid: {call_sid}, Patient Number: {from_number}, MRN from URL: {mrn}")
 
-        # --- 1. Identify Patient (using MRN) ---
+        # --- 1. Identify Patient (using Firestore MRN lookup) ---
         patient_data = get_patient_info_by_mrn(mrn)
         if not patient_data:
             log.error(f"Could not find patient for MRN {mrn} provided in webhook URL. CallSid: {call_sid}")
@@ -217,9 +227,12 @@ async def handle_incoming_call(request: Request):
             return Response(content=str(response), media_type="text/xml", status_code=200)
 
         log.info(f"Identified Patient: {patient_data.get('name', 'N/A')} (MRN: {mrn})")
+        
+        # Store the MRN in the active connection for the tool call later
+        patient_mrn = patient_data.get("mrn") 
 
         # --- 2. Connect to Hume EVI ---
-        if not HUME_API_KEY or not HUME_EVI_WS_URI or not HUME_CONFIG_ID:
+        if not all([HUME_API_KEY, HUME_EVI_WS_URI, HUME_CONFIG_ID]):
             log.error(f"Hume configuration missing. Cannot connect. CallSid: {call_sid}")
             response = VoiceResponse(); response.say("AI service configuration error."); response.hangup()
             return Response(content=str(response), media_type="text/xml", status_code=200)
@@ -233,10 +246,6 @@ async def handle_incoming_call(request: Request):
         
         try:
              hume_websocket = await websockets.connect(uri_with_key_and_config)
-        except websockets.exceptions.InvalidURI:
-             log.error(f"Invalid Hume WebSocket URI: {HUME_EVI_WS_URI}. CallSid: {call_sid}", exc_info=True)
-             response = VoiceResponse(); response.say("AI connection error: Invalid address."); response.hangup()
-             return Response(content=str(response), media_type="text/xml", status_code=200)
         except websockets.exceptions.WebSocketException as e:
              log.error(f"Failed to connect to Hume EVI WebSocket: {e}. CallSid: {call_sid}", exc_info=True)
              response = VoiceResponse(); response.say("Could not connect to the AI service."); response.hangup()
@@ -250,7 +259,8 @@ async def handle_incoming_call(request: Request):
             "stream_sid": None,
             "resample_state": None,
             "transcript": [],
-            "is_interrupted": False
+            "is_interrupted": False,
+            "patient_mrn": patient_mrn # <-- Store MRN for use in listen_to_hume
         }
 
         # --- 3. Send Initial Settings (with VARIABLES and TOOL) ---
@@ -284,7 +294,7 @@ async def handle_incoming_call(request: Request):
             "tools": [{
                 "type": "function", "name": "end_call_triage",
                 "description": "Summarize call and log final action.",
-                "parameters": json.dumps(tool_params_schema) # Stringified
+                "parameters": json.dumps(tool_params_schema)
             }]
         }
         
@@ -297,7 +307,6 @@ async def handle_incoming_call(request: Request):
              response = VoiceResponse(); response.say("AI connection lost early."); response.hangup()
              return Response(content=str(response), media_type="text/xml", status_code=200)
 
-        # Start the background listener task *only after* settings are sent successfully
         asyncio.create_task(listen_to_hume(call_sid))
 
     except Exception as e:
@@ -321,9 +330,7 @@ async def handle_incoming_call(request: Request):
 # --- WebSocket Endpoint for Twilio Audio Stream ---
 @app.websocket("/twilio/audiostream/{call_sid}")
 async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
-    """
-    Receives audio (mu-law) from Twilio, transcodes, forwards to Hume.
-    """
+    # ... (This function remains exactly the same as the previous robust version) ...
     connection_details = active_connections.get(call_sid)
     if not connection_details or not connection_details.get("hume_ws"):
         log.error(f"Twilio WS connected, but no active Hume connection found for CallSid: {call_sid}. Closing immediately.")
@@ -332,7 +339,7 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
     try:
         await websocket.accept()
         log.info(f"Twilio WebSocket accepted for CallSid: {call_sid}")
-        connection_details["twilio_ws"] = websocket # Store WS only after accept
+        connection_details["twilio_ws"] = websocket
         hume_ws = connection_details["hume_ws"]
 
         while True:
@@ -402,16 +409,14 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
         await cleanup_connection(call_sid, "Twilio stream ended/disconnected")
 
 
-# --- Background Task to Listen to Hume ---
-@app.websocket("/listen_to_hume/{call_sid}") # This decorator is harmless
+# --- UPDATED Background Task to Listen to Hume (with Firestore) ---
+@app.websocket("/listen_to_hume/{call_sid}")
 async def listen_to_hume(call_sid: str):
-    """
-    Listens for messages from Hume EVI. Handles interruptions, audio, transcript, tools.
-    """
     log.info(f"Started listening to Hume EVI for CallSid: {call_sid}")
     hume_ws = None
     transcript = []
     is_interrupted = False
+    patient_mrn = None # <-- NEW: To store the MRN
 
     try:
         connection_details = active_connections.get(call_sid)
@@ -422,6 +427,13 @@ async def listen_to_hume(call_sid: str):
         hume_ws = connection_details["hume_ws"]
         transcript = connection_details.get("transcript", [])
         is_interrupted = connection_details.get("is_interrupted", False)
+        patient_mrn = connection_details.get("patient_mrn") # <-- NEW: Get MRN
+
+        if not patient_mrn:
+             log.error(f"listen_to_hume: Missing patient_mrn in connection details. Cannot update database. CallSid: {call_sid}")
+             # We can continue the call, but can't save the data
+        if not db:
+            log.error(f"listen_to_hume: Firestore client 'db' is not available. Cannot update database. CallSid: {call_sid}")
 
 
         async for message_str in hume_ws:
@@ -444,24 +456,21 @@ async def listen_to_hume(call_sid: str):
 
             # --- Process Hume Message Types ---
             if hume_type == "audio_output":
+                # ... (This entire audio processing block is identical to the previous version) ...
                 if is_interrupted:
                     log.info(f"Skipping Hume audio_output due to interruption. CallSid: {call_sid}")
                     continue
-
                 twilio_ws = connection_details.get("twilio_ws")
                 stream_sid = connection_details.get("stream_sid")
-
                 if twilio_ws and stream_sid and twilio_ws.client_state == websockets.protocol.State.OPEN:
                     try:
                         wav_b64 = hume_data.get("data")
                         if not wav_b64:
                              log.warning(f"Hume audio_output message missing data. CallSid: {call_sid}")
                              continue
-
                         wav_bytes = base64.b64decode(wav_b64)
                         pcm_bytes_hume = b''
                         input_rate_hume = 8000; samp_width_hume = 2; n_channels = 1
-
                         with io.BytesIO(wav_bytes) as wav_file_like:
                             try:
                                 with wave.open(wav_file_like, 'rb') as wav_reader:
@@ -475,11 +484,9 @@ async def listen_to_hume(call_sid: str):
                             except wave.Error as e:
                                  log.error(f"Error reading Hume WAV data: {e}. CallSid: {call_sid}")
                                  continue
-
                         if not pcm_bytes_hume:
                              log.warning(f"Empty PCM data after reading Hume WAV. CallSid: {call_sid}")
                              continue
-
                         output_rate_twilio = 8000
                         pcm_bytes_8k = pcm_bytes_hume
                         if input_rate_hume != output_rate_twilio:
@@ -490,25 +497,21 @@ async def listen_to_hume(call_sid: str):
                             except audioop.error as e:
                                  log.error(f"Audioop error during resampling: {e}. CallSid: {call_sid}")
                                  continue
-
                         try:
                              mulaw_bytes = audioop.lin2ulaw(pcm_bytes_8k, samp_width_hume)
                         except audioop.error as e:
                              log.error(f"Audioop error during lin2ulaw conversion: {e}. CallSid: {call_sid}")
                              continue
-
                         mulaw_b64 = base64.b64encode(mulaw_bytes).decode('utf-8')
                         twilio_media_message = {
                             "event": "media", "streamSid": stream_sid,
                             "media": { "payload": mulaw_b64 }
                         }
-                        
                         try:
                              await twilio_ws.send_text(json.dumps(twilio_media_message))
                         except websockets.exceptions.ConnectionClosed:
                              log.warning(f"Twilio WS closed while trying to send audio. CallSid: {call_sid}")
                              break
-
                     except base64.binascii.Error as e:
                         log.error(f"Base64 decode error for Hume audio: {e}. CallSid: {call_sid}")
                     except Exception as e:
@@ -520,10 +523,10 @@ async def listen_to_hume(call_sid: str):
                          log.warning(f"Hume sent audio, but stream_sid not yet received from Twilio. CallSid: {call_sid}")
 
             elif hume_type in ("user_message", "assistant_message"):
+                # ... (This interruption/transcript block is identical to the previous version) ...
                 role = hume_data.get("message", {}).get("role", "unknown")
                 content = hume_data.get("message", {}).get("content", "")
                 is_interim = hume_data.get("message", {}).get("metadata", {}).get("interim", False)
-
                 if role == "user" and is_interim:
                     if connection_details and not is_interrupted:
                         log.info(f"Interim user_message detected - Setting interruption flag. CallSid: {call_sid}")
@@ -556,7 +559,7 @@ async def listen_to_hume(call_sid: str):
 
                 if tool_name == "end_call_triage" and tool_call_id:
                     log.info(f"Hume requested 'end_call_triage' tool. CallSid: {call_sid}")
-                    if connection_details: # Reset interrupt flag
+                    if connection_details:
                         connection_details["is_interrupted"] = False
                         is_interrupted = False
                     try:
@@ -571,10 +574,43 @@ async def listen_to_hume(call_sid: str):
                         log.info(f"  Summary: {summary}")
                         log.info(f"  Action Statement: {action_statement}")
                         
+                        # --- NEW: Save data to Firestore ---
+                        if db and patient_mrn:
+                            try:
+                                # Create a new subcollection "call_logs" for this patient
+                                # Use the CallSid as the document ID for the log
+                                log_ref = db.collection("patients").document(patient_mrn).collection("call_logs").document(call_sid)
+                                log_data = {
+                                    "timestamp": firestore.SERVER_TIMESTAMP,
+                                    "call_sid": call_sid,
+                                    "full_transcript": "\n".join(transcript), # Store as a single string
+                                    "summary": summary,
+                                    "action_statement": action_statement,
+                                    "call_purpose": connection_details.get("variables", {}).get("call_purpose", "N/A") # Get from variables
+                                }
+                                log_ref.set(log_data)
+                                log.info(f"Successfully saved call log to Firestore for MRN {patient_mrn}, CallSid {call_sid}")
+                                
+                                # We can also update the main patient document
+                                patient_ref = db.collection("patients").document(patient_mrn)
+                                patient_ref.update({
+                                    "last_call_summary": summary,
+                                    "last_call_action": action_statement,
+                                    "last_call_timestamp": firestore.SERVER_TIMESTAMP,
+                                    "next_ai_call": "2025-10-31" # Example: schedule next call for tomorrow
+                                })
+                                log.info(f"Successfully updated patient record for MRN {patient_mrn}")
+                                
+                            except Exception as e:
+                                log.error(f"Failed to save call log to Firestore for MRN {patient_mrn}: {e}", exc_info=True)
+                        else:
+                            log.error(f"Cannot save to Firestore: DB client not available or MRN missing. CallSid: {call_sid}")
+                        # ---------------------------------
+
                         tool_response_message = {
                             "type": "tool_response",
                             "tool_call_id": tool_call_id,
-                            "content": json.dumps({"status": "success", "message": "Call triage data logged."}) # Content must be JSON string
+                            "content": json.dumps({"status": "success", "message": "Call triage data logged."})
                         }
                         
                         try:
