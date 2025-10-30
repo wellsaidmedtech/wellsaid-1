@@ -79,7 +79,8 @@ async def root():
 @app.post("/twilio/incoming_call")
 async def handle_incoming_call(request: Request):
     """
-    Handles incoming Twilio calls using the "Variables" override method.
+    Handles incoming Twilio calls using the "Variables" override method
+    and defines a custom tool for end-of-call summary.
     """
     log.info("-" * 30)
     log.info(">>> Twilio Incoming Call Webhook Received <<<")
@@ -99,13 +100,10 @@ async def handle_incoming_call(request: Request):
         # --- 1. Identify Patient ---
         patient_data = get_patient_info(from_number)
         if not patient_data:
-            log.warning(f"--- WARNING: Could not identify patient from {from_number}. Rejecting call. ---")
-            response = VoiceResponse()
-            response.say("Sorry, we could not identify your phone number with our records.", voice='alice')
-            response.hangup()
+            response = VoiceResponse(); response.say("Sorry, we could not identify your number."); response.hangup()
             return Response(content=str(response), media_type="text/xml")
 
-        log.info(f"--- Identified Patient: {patient_data.get('name', 'N/A')} (ID: {patient_data.get('id', 'N/A')}) ---")
+        log.info(f"--- Identified Patient: {patient_data.get('name', 'N/A')} ---")
 
         # --- 2. Connect to Hume EVI (with config_id in URL) ---
         uri_with_key_and_config = f"{HUME_EVI_WS_URI}?apiKey={HUME_API_KEY}&config_id={HUME_CONFIG_ID}"
@@ -116,10 +114,14 @@ async def handle_incoming_call(request: Request):
 
         # Store connection details
         active_connections[call_sid] = {
-            "hume_ws": hume_websocket, "twilio_ws": None, "stream_sid": None, "resample_state": None
+            "hume_ws": hume_websocket,
+            "twilio_ws": None,
+            "stream_sid": None,
+            "resample_state": None,
+            "transcript": [] # <-- NEW: Add empty list for transcript
         }
 
-        # --- 3. Send Initial Settings (with NEW VARIABLES) ---
+        # --- 3. Send Initial Settings (with VARIABLES and TOOLS) ---
         conditions_list = ", ".join(patient_data.get('medical_conditions', ['N/A']))
         medications_list = ", ".join(patient_data.get('current_medications', ['N/A']))
 
@@ -128,7 +130,7 @@ async def handle_incoming_call(request: Request):
             "variables": {
                 "patient_name": patient_data.get('name', 'the patient'),
                 "dob": patient_data.get('date_of_birth', 'N/A'),
-                "age": str(patient_data.get('age', 'N/A')), # Convert int to string
+                "age": str(patient_data.get('age', 'N/A')),
                 "gender": patient_data.get('gender', 'N/A'),
                 "conditions": conditions_list,
                 "medications": medications_list,
@@ -141,17 +143,42 @@ async def handle_incoming_call(request: Request):
                 "channels": 1
             },
             "voice": {
-                "id": "97fe9008-8584-4d56-8453-bd8c7ead3663", # Your "Sam" voice
+                "id": "97fe9008-8584-4d56-8453-bd8c7ead3663",
                 "provider": "HUME_AI"
             },
-            "evi_version": "3"
+            "evi_version": "3",
+            
+            # --- NEW: Define the custom tool for Hume's API ---
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "end_call_triage",
+                    "description": "Call this tool at the end of the conversation to summarize the call and log the final action.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "summary": {
+                                "type": "string",
+                                "description": "A one or two-sentence summary of the patient's concern and the call's outcome."
+                            },
+                            "action_statement": {
+                                "type": "string",
+                                "description": "The final categorized action. Must be one of: 'EMERGENCY_911', 'REFILL_REQUEST', 'NOTE_FOR_REVIEW', or 'VERIFICATION_FAILED'."
+                            }
+                        },
+                        "required": ["summary", "action_statement"]
+                    }
+                }
+            ]
+            # ------------------------------------------------
         }
         await hume_websocket.send(json.dumps(initial_message))
-        log.info("--- Sent session_settings (using new variables) to Hume EVI ---")
+        log.info("--- Sent session_settings (with variables and custom tool) to Hume EVI ---")
 
         # Start the background task
         asyncio.create_task(listen_to_hume(call_sid))
 
+    # ... (Exception handling) ...
     except websockets.exceptions.WebSocketException as e:
         log.error(f"--- FAILED to connect WebSocket to Hume EVI: {e} ---")
         await cleanup_connection(call_sid, "Hume connection failed")
@@ -162,6 +189,7 @@ async def handle_incoming_call(request: Request):
         await cleanup_connection(call_sid, "Incoming call setup failed")
         response = VoiceResponse(); response.say("An unexpected error occurred."); response.hangup()
         return Response(content=str(response), media_type="text/xml")
+
 
     # --- 4. Respond to Twilio ---
     response = VoiceResponse()
@@ -236,11 +264,15 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
 async def listen_to_hume(call_sid: str):
     """
     Listens for messages from Hume EVI.
-    Transcodes audio (WAV -> PCM -> mu-law) and forwards to Twilio.
+    - Collects transcript data.
+    - Handles audio transcoding.
+    - Catches the final 'tool_call' to log the summary.
     """
     log.info(f"--- Started listening to Hume EVI for CallSid: {call_sid} ---")
     hume_ws = None
     resample_state = None
+    # --- NEW: Variable to hold our transcript list ---
+    transcript = []
 
     try:
         connection_details = active_connections.get(call_sid)
@@ -248,6 +280,9 @@ async def listen_to_hume(call_sid: str):
             log.error(f"--- listen_to_hume: Hume WS not found for {call_sid} at start. Task exiting. ---")
             return
         hume_ws = connection_details["hume_ws"]
+        # --- NEW: Get the transcript list from the connection details ---
+        transcript = connection_details.get("transcript", [])
+
 
         async for message_str in hume_ws:
             connection_details = active_connections.get(call_sid)
@@ -262,57 +297,91 @@ async def listen_to_hume(call_sid: str):
                 if hume_type != "audio_output":
                     log.info(f"--- Hume Event: {hume_type} ---")
 
+                # --- Handle Audio Output (Transcoding) ---
                 if hume_type == "audio_output":
                     twilio_ws = connection_details.get("twilio_ws")
                     stream_sid = connection_details.get("stream_sid")
 
                     if twilio_ws and stream_sid and not twilio_ws.client_state == websockets.protocol.State.CLOSED:
                         try:
+                            # ... (All the WAV parsing and audioop transcoding code remains here) ...
                             wav_b64 = hume_data["data"]
                             wav_bytes = base64.b64decode(wav_b64)
-
                             pcm_bytes_hume = b''
                             input_rate_hume = 8000
                             samp_width_hume = 2
-
                             with io.BytesIO(wav_bytes) as wav_file_like:
                                 with wave.open(wav_file_like, 'rb') as wav_reader:
                                     n_channels = wav_reader.getnchannels()
                                     samp_width_hume = wav_reader.getsampwidth()
                                     input_rate_hume = wav_reader.getframerate()
-
                                     if n_channels != 1 or samp_width_hume != 2:
                                         log.warning(f"Unexpected WAV format from Hume: C={n_channels}, W={samp_width_hume}, R={input_rate_hume}")
                                     if samp_width_hume != 2: continue
-
                                     pcm_bytes_hume = wav_reader.readframes(wav_reader.getnframes())
-
                             if not pcm_bytes_hume: continue
-
                             output_rate_twilio = 8000
                             pcm_bytes_8k = pcm_bytes_hume
                             if input_rate_hume != output_rate_twilio:
-                                log.info(f"    Resampling Hume audio from {input_rate_hume}Hz to {output_rate_twilio}Hz.")
-                                # Update resample state from the connection details
                                 resample_state = connection_details.get("resample_state")
                                 pcm_bytes_8k, resample_state = audioop.ratecv(pcm_bytes_hume, samp_width_hume, 1, input_rate_hume, output_rate_twilio, resample_state)
-                                connection_details["resample_state"] = resample_state # Store the updated state
-
+                                connection_details["resample_state"] = resample_state
                             mulaw_bytes = audioop.lin2ulaw(pcm_bytes_8k, samp_width_hume)
                             mulaw_b64 = base64.b64encode(mulaw_bytes).decode('utf-8')
-
                             twilio_media_message = {
                                 "event": "media",
                                 "streamSid": stream_sid,
                                 "media": { "payload": mulaw_b64 }
                             }
                             await twilio_ws.send_text(json.dumps(twilio_media_message))
-
                         except Exception as e:
                              log.error(f"    UNEXPECTED ERROR in Hume audio processing for {call_sid}: {type(e).__name__} - {e}")
                     else:
                         log.warning(f"--- Hume sent audio, but Twilio WS/stream_sid not ready for {call_sid}. Skipping. ---")
 
+                # --- NEW: Capture Transcript ---
+                elif hume_type in ("user_message", "assistant_message"):
+                    role = hume_data.get("message", {}).get("role", "unknown")
+                    content = hume_data.get("message", {}).get("content", "")
+                    transcript.append(f"{role.upper()}: {content}")
+                    log.info(f"    Transcript part added: {role.upper()}: {content[:30]}...")
+
+                # --- NEW: Handle End-of-Call Tool ---
+                elif hume_type == "tool_call":
+                    tool_name = hume_data.get("tool_call", {}).get("name")
+                    if tool_name == "end_call_triage":
+                        log.info("--- Hume requested 'end_call_triage' tool ---")
+                        # Extract the arguments generated by the AI
+                        try:
+                            args_str = hume_data.get("tool_call", {}).get("parameters", "{}")
+                            args = json.loads(args_str)
+                            summary = args.get("summary", "N/A")
+                            action_statement = args.get("action_statement", "N/A")
+                            
+                            # Log the final collected data
+                            log.info("--- 📞 FINAL CALL SUMMARY DATA ---")
+                            log.info(f"  Call SID: {call_sid}")
+                            log.info(f"  Transcript:\n{json.dumps(transcript, indent=2)}")
+                            log.info(f"  Summary: {summary}")
+                            log.info(f"  Action Statement: {action_statement}")
+                            
+                            # In a real app, you would save this data to your database here
+                            
+                            # Send a response back to Hume so it can say goodbye
+                            tool_response_message = {
+                                "type": "tool_response",
+                                "tool_call_id": hume_data.get("tool_call", {}).get("tool_call_id"),
+                                "content": "{\"status\": \"success\", \"message\": \"Call triage data logged.\"}"
+                            }
+                            await hume_ws.send(json.dumps(tool_response_message))
+                            log.info("--- Sent tool_response back to Hume ---")
+                        
+                        except json.JSONDecodeError as e:
+                            log.error(f"    ERROR decoding tool call arguments: {e}. Raw: {args_str}")
+                        except Exception as e:
+                            log.error(f"    ERROR processing tool call: {e}")
+
+                # --- Handle Errors ---
                 elif hume_type == "error":
                     log.error(f"--- Hume EVI Error (Full Message): {hume_data} ---")
                     if hume_data.get('code', '').startswith('E'):
@@ -324,6 +393,7 @@ async def listen_to_hume(call_sid: str):
             except Exception as e:
                 log.error(f"--- UNEXPECTED ERROR processing Hume message for {call_sid}: {type(e).__name__} - {e} ---")
 
+    # ... (Rest of exception handling and finally block) ...
     except websockets.exceptions.ConnectionClosed:
         log.info(f"--- Hume WebSocket closed for {call_sid}. ---")
     except Exception as e:
