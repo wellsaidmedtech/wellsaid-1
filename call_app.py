@@ -16,7 +16,9 @@ from twilio.rest import Client as TwilioRestClient
 from twilio.base.exceptions import TwilioRestException
 from pydantic import BaseModel
 import firebase_admin # <-- NEW
-from firebase_admin import credentials, firestore # <-- NEW
+from firebase_admin import credentials, firestore 
+from dotenv import load_dotenv
+load_dotenv() # This line actually reads the .env file
 
 # Patient Data Import
 try:
