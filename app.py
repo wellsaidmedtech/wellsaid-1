@@ -448,7 +448,11 @@ async def listen_to_hume(call_sid: str):
                             }
                             await hume_ws.send(json.dumps(tool_response_message))
                             log.info("--- Sent tool_response back to Hume ---")
-                        
+
+                            # --- ADD THIS LOG ---
+                            log.info("--- Waiting for Hume's final response... ---")
+                            # ------------------
+                            
                         except Exception as e:
                             log.error(f"    ERROR processing tool call: {e}")
 
