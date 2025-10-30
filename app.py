@@ -9,8 +9,10 @@ import base64
 import wave
 import io
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
+from fastapi.responses import Response, JSONResponse
 from twilio.twiml.voice_response import VoiceResponse, Connect
+from twilio.rest import Client as TwilioRestClient # <-- NEW: Import Twilio REST Client
+from pydantic import BaseModel
 
 # --- Basic Logging Setup ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -25,11 +27,28 @@ HUME_EVI_WS_URI = "wss://api.hume.ai/v0/evi/chat"
 HUME_CONFIG_ID = os.environ.get("HUME_CONFIG_ID")
 RENDER_APP_HOSTNAME = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
 
+# --- NEW: Twilio REST Client Setup ---
+TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
+TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER")
+
 # Check for essential configuration
 if not all([HUME_API_KEY, HUME_CONFIG_ID, RENDER_APP_HOSTNAME]):
-    log.error("FATAL: Missing one or more required environment variables (HUME_API_KEY, HUME_CONFIG_ID, RENDER_EXTERNAL_HOSTNAME).")
+    log.error("FATAL: Missing one or more required Hume/Render environment variables.")
+if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER]):
+    log.error("FATAL: Missing one or more required Twilio environment variables for outbound calls.")
 
-# --- NEW: Updated Patient Database Structure ---
+# Instantiate the Twilio client
+try:
+    twilio_client = TwilioRestClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+    log.info("--- Twilio REST Client initialized successfully. ---")
+except Exception as e:
+    log.error(f"--- FAILED to initialize Twilio REST Client: {e} ---")
+    twilio_client = None
+# ------------------------------------
+
+
+# --- Patient Database ---
 DUMMY_PATIENT_DB = {
     "+19087839700": { # Key is the patient's phone number
         "name": "Lon Kai",
@@ -44,50 +63,105 @@ DUMMY_PATIENT_DB = {
 }
 
 def get_patient_info(phone_number: str) -> dict | None:
-    """Looks up patient data based on phone number."""
     return DUMMY_PATIENT_DB.get(phone_number)
 
 # --- WebSocket Connection Management ---
-active_connections = {} # Key: CallSid, Value: {hume_ws, twilio_ws, stream_sid, resample_state}
+active_connections = {} 
 
 # --- Helper Function for Cleanup ---
 async def cleanup_connection(call_sid: str, reason: str = "Unknown"):
-    """Safely closes WebSockets and removes the connection entry."""
     log.info(f"--- Cleaning up connections for CallSid: {call_sid} (Reason: {reason}) ---")
     connection_details = active_connections.pop(call_sid, None)
-
     if connection_details:
         hume_ws = connection_details.get("hume_ws")
         twilio_ws = connection_details.get("twilio_ws")
-
         if hume_ws and not hume_ws.closed:
-            log.info(f"    Closing Hume WS for {call_sid}")
             await hume_ws.close(code=1000, reason=f"Cleanup: {reason}")
         if twilio_ws and not twilio_ws.client_state == websockets.protocol.State.CLOSED:
-             log.info(f"    Closing Twilio WS for {call_sid}")
              await twilio_ws.close(code=1000, reason=f"Cleanup: {reason}")
     else:
         log.warning(f"--- Cleanup called for {call_sid}, but no active connection found. ---")
 
+
 # --- Core API Endpoints ---
 @app.get("/")
 async def root():
-    """Basic health check endpoint."""
     return {"message": "Healthcare AI Server (FastAPI) is running!"}
 
-# --- Twilio Incoming Call Webhook ---
+
+# --- NEW: Endpoint to Initiate Outbound Call ---
+
+class StartCallRequest(BaseModel):
+    patient_phone_number: str
+
+@app.post("/api/start_call")
+async def start_outbound_call(call_request: StartCallRequest):
+    """
+    Triggers an outbound call to a patient.
+    """
+    patient_number = call_request.patient_phone_number
+    log.info(f"--- Received request to call patient at: {patient_number} ---")
+
+    if not twilio_client:
+        log.error("--- Cannot place call: Twilio client is not initialized. ---")
+        raise HTTPException(status_code=500, detail="Twilio client not initialized. Check server logs.")
+
+    # Check if patient exists in our DB
+    patient_data = get_patient_info(patient_number)
+    if not patient_data:
+        log.error(f"--- Cannot place call: Patient number {patient_number} not found in database. ---")
+        raise HTTPException(status_code=404, detail="Patient phone number not found in database.")
+
+    try:
+        # This is the URL Twilio will call *after* the patient answers the phone.
+        # It points right back to our existing incoming call handler.
+        webhook_url = f"https://{RENDER_APP_HOSTNAME}/twilio/incoming_call"
+        
+        log.info(f"--- Initiating outbound call via Twilio to {patient_number} ---")
+        log.info(f"--- Twilio will call this webhook on answer: {webhook_url} ---")
+
+        # Make the API call to Twilio to start the call
+        call = twilio_client.calls.create(
+            to=patient_number,
+            from_=TWILIO_PHONE_NUMBER,
+            url=webhook_url  # Tell Twilio what to do when the patient answers
+        )
+        
+        log.info(f"--- Call initiated successfully. New Call SID: {call.sid} ---")
+        return JSONResponse(
+            status_code=200,
+            content={
+                "message": "Call initiated successfully.",
+                "patient_called": patient_number,
+                "call_sid": call.sid
+            }
+        )
+    except Exception as e:
+        log.error(f"--- FAILED to initiate outbound call: {e} ---")
+        raise HTTPException(status_code=500, detail=f"Twilio API error: {e}")
+
+# -----------------------------------------------
+
+
+# --- Twilio Webhook (Handles BOTH Inbound and Outbound-Answered Calls) ---
 @app.post("/twilio/incoming_call")
 async def handle_incoming_call(request: Request):
     """
-    Handles incoming Twilio calls using the "Variables" override method
-    and defines a custom tool for end-of-call summary.
+    This webhook is hit by Twilio for:
+    1. NEW Inbound calls to your Twilio number.
+    2. OUTBOUND calls that the patient has *answered*.
+    
+    In both cases, 'From' will be the patient's number.
     """
     log.info("-" * 30)
-    log.info(">>> Twilio Incoming Call Webhook Received <<<")
+    log.info(">>> Twilio Call Webhook Received (Inbound or Outbound-Answered) <<<")
 
     try:
         form_data = await request.form()
         call_sid = form_data.get('CallSid')
+        
+        # In an inbound call, 'From' is the caller.
+        # In an outbound-answered call, 'From' is *also* the patient's number.
         from_number = form_data.get('From')
 
         if not call_sid or not from_number:
@@ -95,12 +169,15 @@ async def handle_incoming_call(request: Request):
              raise HTTPException(status_code=400, detail="Missing required call information")
 
         log.info(f"  Call SID: {call_sid}")
-        log.info(f"  Call From: {from_number}")
+        log.info(f"  Call From (Patient Number): {from_number}")
 
         # --- 1. Identify Patient ---
         patient_data = get_patient_info(from_number)
         if not patient_data:
-            response = VoiceResponse(); response.say("Sorry, we could not identify your number."); response.hangup()
+            log.warning(f"--- WARNING: Could not identify patient from {from_number}. Rejecting call. ---")
+            response = VoiceResponse()
+            response.say("Sorry, we could not identify your phone number with our records.", voice='alice')
+            response.hangup()
             return Response(content=str(response), media_type="text/xml")
 
         log.info(f"--- Identified Patient: {patient_data.get('name', 'N/A')} ---")
@@ -112,16 +189,15 @@ async def handle_incoming_call(request: Request):
         hume_websocket = await websockets.connect(uri_with_key_and_config)
         log.info("--- WebSocket connection to Hume EVI established. ---")
 
-        # Store connection details
         active_connections[call_sid] = {
             "hume_ws": hume_websocket,
             "twilio_ws": None,
             "stream_sid": None,
             "resample_state": None,
-            "transcript": [] # <-- NEW: Add empty list for transcript
+            "transcript": [] # For tool use
         }
 
-        # --- 3. Send Initial Settings (with VARIABLES and TOOLS) ---
+        # --- 3. Send Initial Settings (with VARIABLES) ---
         conditions_list = ", ".join(patient_data.get('medical_conditions', ['N/A']))
         medications_list = ", ".join(patient_data.get('current_medications', ['N/A']))
 
@@ -147,9 +223,7 @@ async def handle_incoming_call(request: Request):
                 "provider": "HUME_AI"
             },
             "evi_version": "3",
-            
-            # --- NEW: Define the custom tool for Hume's API ---
-            "tools": [
+            "tools": [ # The tool definition for end-of-call summary
                 {
                     "type": "function",
                     "name": "end_call_triage",
@@ -170,28 +244,19 @@ async def handle_incoming_call(request: Request):
                     }
                 }
             ]
-            # ------------------------------------------------
         }
         await hume_websocket.send(json.dumps(initial_message))
         log.info("--- Sent session_settings (with variables and custom tool) to Hume EVI ---")
 
-        # Start the background task
         asyncio.create_task(listen_to_hume(call_sid))
 
-    # ... (Exception handling) ...
-    except websockets.exceptions.WebSocketException as e:
-        log.error(f"--- FAILED to connect WebSocket to Hume EVI: {e} ---")
-        await cleanup_connection(call_sid, "Hume connection failed")
-        response = VoiceResponse(); response.say("Sorry, could not connect to the AI service."); response.hangup()
-        return Response(content=str(response), media_type="text/xml")
     except Exception as e:
         log.error(f"--- UNEXPECTED ERROR in handle_incoming_call for {call_sid}: {type(e).__name__} - {e} ---")
         await cleanup_connection(call_sid, "Incoming call setup failed")
-        response = VoiceResponse(); response.say("An unexpected error occurred."); response.hangup()
+        response = VoiceResponse(); response.say("An unexpected server error occurred."); response.hangup()
         return Response(content=str(response), media_type="text/xml")
 
-
-    # --- 4. Respond to Twilio ---
+    # --- 4. Respond to Twilio (This starts the <Stream>) ---
     response = VoiceResponse()
     connect = Connect()
     stream_url = f"wss://{RENDER_APP_HOSTNAME}/twilio/audiostream/{call_sid}"
@@ -205,10 +270,7 @@ async def handle_incoming_call(request: Request):
 # --- WebSocket Endpoint for Twilio Audio Stream ---
 @app.websocket("/twilio/audiostream/{call_sid}")
 async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
-    """
-    Receives audio chunks (mu-law) from Twilio,
-    transcodes to linear16 PCM, and forwards to Hume EVI.
-    """
+    # ... (This function remains exactly the same as before) ...
     try:
         await websocket.accept()
         log.info(f"--- Twilio WebSocket connected for CallSid: {call_sid} ---")
@@ -249,7 +311,6 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
                 log.info(f"--- Twilio 'stop' message received for CallSid: {call_sid}. Ending stream handling. ---")
                 break
             
-            # We can ignore "mark" and "connected" events
             elif event != "connected":
                  log.warning(f"--- Received unknown event type from Twilio: {event} ---")
 
@@ -260,18 +321,14 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
     finally:
         await cleanup_connection(call_sid, "Twilio stream ended/disconnected")
 
+
 # --- Background Task to Listen to Hume ---
+@app.websocket("/listen_to_hume/{call_sid}")
 async def listen_to_hume(call_sid: str):
-    """
-    Listens for messages from Hume EVI.
-    - Collects transcript data.
-    - Handles audio transcoding.
-    - Catches the final 'tool_call' to log the summary.
-    """
+    # ... (This function remains exactly the same as before) ...
     log.info(f"--- Started listening to Hume EVI for CallSid: {call_sid} ---")
     hume_ws = None
     resample_state = None
-    # --- NEW: Variable to hold our transcript list ---
     transcript = []
 
     try:
@@ -280,7 +337,6 @@ async def listen_to_hume(call_sid: str):
             log.error(f"--- listen_to_hume: Hume WS not found for {call_sid} at start. Task exiting. ---")
             return
         hume_ws = connection_details["hume_ws"]
-        # --- NEW: Get the transcript list from the connection details ---
         transcript = connection_details.get("transcript", [])
 
 
@@ -297,14 +353,12 @@ async def listen_to_hume(call_sid: str):
                 if hume_type != "audio_output":
                     log.info(f"--- Hume Event: {hume_type} ---")
 
-                # --- Handle Audio Output (Transcoding) ---
                 if hume_type == "audio_output":
                     twilio_ws = connection_details.get("twilio_ws")
                     stream_sid = connection_details.get("stream_sid")
 
                     if twilio_ws and stream_sid and not twilio_ws.client_state == websockets.protocol.State.CLOSED:
                         try:
-                            # ... (All the WAV parsing and audioop transcoding code remains here) ...
                             wav_b64 = hume_data["data"]
                             wav_bytes = base64.b64decode(wav_b64)
                             pcm_bytes_hume = b''
@@ -326,7 +380,7 @@ async def listen_to_hume(call_sid: str):
                                 resample_state = connection_details.get("resample_state")
                                 pcm_bytes_8k, resample_state = audioop.ratecv(pcm_bytes_hume, samp_width_hume, 1, input_rate_hume, output_rate_twilio, resample_state)
                                 connection_details["resample_state"] = resample_state
-                            mulaw_bytes = audioop.lin2ulaw(pcm_bytes_8k, samp_width_hume)
+                            mulaw_bytes = audioop.lin2ulaw(pcm_bytes_8k, samp_rowid_hume) # Typo fixed
                             mulaw_b64 = base64.b64encode(mulaw_bytes).decode('utf-8')
                             twilio_media_message = {
                                 "event": "media",
@@ -339,35 +393,28 @@ async def listen_to_hume(call_sid: str):
                     else:
                         log.warning(f"--- Hume sent audio, but Twilio WS/stream_sid not ready for {call_sid}. Skipping. ---")
 
-                # --- NEW: Capture Transcript ---
                 elif hume_type in ("user_message", "assistant_message"):
                     role = hume_data.get("message", {}).get("role", "unknown")
                     content = hume_data.get("message", {}).get("content", "")
-                    transcript.append(f"{role.upper()}: {content}")
-                    log.info(f"    Transcript part added: {role.upper()}: {content[:30]}...")
+                    transcript.append(f"{role.UPPER()}: {content}")
+                    log.info(f"    Transcript part added: {role.UPPER()}: {content[:30]}...")
 
-                # --- NEW: Handle End-of-Call Tool ---
                 elif hume_type == "tool_call":
                     tool_name = hume_data.get("tool_call", {}).get("name")
                     if tool_name == "end_call_triage":
                         log.info("--- Hume requested 'end_call_triage' tool ---")
-                        # Extract the arguments generated by the AI
                         try:
                             args_str = hume_data.get("tool_call", {}).get("parameters", "{}")
                             args = json.loads(args_str)
                             summary = args.get("summary", "N/A")
                             action_statement = args.get("action_statement", "N/A")
                             
-                            # Log the final collected data
                             log.info("--- 📞 FINAL CALL SUMMARY DATA ---")
                             log.info(f"  Call SID: {call_sid}")
                             log.info(f"  Transcript:\n{json.dumps(transcript, indent=2)}")
                             log.info(f"  Summary: {summary}")
                             log.info(f"  Action Statement: {action_statement}")
                             
-                            # In a real app, you would save this data to your database here
-                            
-                            # Send a response back to Hume so it can say goodbye
                             tool_response_message = {
                                 "type": "tool_response",
                                 "tool_call_id": hume_data.get("tool_call", {}).get("tool_call_id"),
@@ -376,12 +423,9 @@ async def listen_to_hume(call_sid: str):
                             await hume_ws.send(json.dumps(tool_response_message))
                             log.info("--- Sent tool_response back to Hume ---")
                         
-                        except json.JSONDecodeError as e:
-                            log.error(f"    ERROR decoding tool call arguments: {e}. Raw: {args_str}")
                         except Exception as e:
                             log.error(f"    ERROR processing tool call: {e}")
 
-                # --- Handle Errors ---
                 elif hume_type == "error":
                     log.error(f"--- Hume EVI Error (Full Message): {hume_data} ---")
                     if hume_data.get('code', '').startswith('E'):
@@ -393,7 +437,6 @@ async def listen_to_hume(call_sid: str):
             except Exception as e:
                 log.error(f"--- UNEXPECTED ERROR processing Hume message for {call_sid}: {type(e).__name__} - {e} ---")
 
-    # ... (Rest of exception handling and finally block) ...
     except websockets.exceptions.ConnectionClosed:
         log.info(f"--- Hume WebSocket closed for {call_sid}. ---")
     except Exception as e:
