@@ -8,7 +8,7 @@ import audioop
 import base64
 import wave
 import io
-import random # <-- NEW: For generating random MRN
+import random
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, JSONResponse
 from twilio.twiml.voice_response import VoiceResponse, Connect
@@ -43,8 +43,7 @@ except Exception as e:
     log.error(f"--- FAILED to initialize Twilio REST Client: {e} ---")
     twilio_client = None
 
-# --- NEW: Patient Database with MRN as Key ---
-# Generate a random 8-digit Medical Record Number (MRN)
+# --- Patient Database with MRN as Key ---
 patient_mrn = str(random.randint(10000000, 99999999))
 
 DUMMY_PATIENT_DB = {
@@ -62,7 +61,7 @@ DUMMY_PATIENT_DB = {
 }
 log.info(f"--- Loaded dummy patient 'Lon Kai' with MRN: {patient_mrn} ---")
 
-# --- NEW: Lookup function that searches by phone ---
+# --- Lookup function that searches by phone ---
 def get_patient_info_by_phone(phone_number: str) -> dict | None:
     """Looks up patient data by *searching* for their phone number."""
     if not phone_number:
@@ -72,7 +71,6 @@ def get_patient_info_by_phone(phone_number: str) -> dict | None:
             # Return the data, and also add the MRN (the key) to it
             return {"mrn": mrn, **data}
     return None
-# ----------------------------------------------------
 
 # --- WebSocket Connection Management ---
 active_connections = {} 
@@ -112,14 +110,13 @@ async def start_outbound_call(call_request: StartCallRequest):
         log.error("--- Cannot place call: Twilio client is not initialized. ---")
         raise HTTPException(status_code=500, detail="Twilio client not initialized. Check server logs.")
 
-    # --- UPDATED: Use new lookup function ---
     patient_data = get_patient_info_by_phone(patient_number)
     if not patient_data:
         log.error(f"--- Cannot place call: Patient number {patient_number} not found in database. ---")
         raise HTTPException(status_code=404, detail="Patient phone number not found in database.")
 
     try:
-        webhook_url = f"https://{RENDER_APP_HOSTNAME}/twilio/incoming_call"
+        webhook_url = f"https{RENDER_APP_HOSTNAME}/twilio/incoming_call"
         log.info(f"--- Initiating outbound call via Twilio to {patient_number} ---")
         log.info(f"--- Twilio will call this webhook on answer: {webhook_url} ---")
 
@@ -156,8 +153,6 @@ async def handle_incoming_call(request: Request):
     try:
         form_data = await request.form()
         call_sid = form_data.get('CallSid')
-        
-        # 'From' will be the patient's number in both inbound and outbound-answered calls
         from_number = form_data.get('From')
 
         if not call_sid or not from_number:
@@ -167,10 +162,9 @@ async def handle_incoming_call(request: Request):
         log.info(f"  Call SID: {call_sid}")
         log.info(f"  Call From (Patient Number): {from_number}")
 
-        # --- 1. Identify Patient (UPDATED: Use new lookup function) ---
+        # --- 1. Identify Patient ---
         patient_data = get_patient_info_by_phone(from_number)
         if not patient_data:
-            # This is where your previous call failed
             log.warning(f"--- WARNING: Could not identify patient from {from_number}. Rejecting call. ---")
             response = VoiceResponse()
             response.say("Sorry, we could not identify your phone number with our records. Please call our main office.", voice='alice')
@@ -261,7 +255,10 @@ async def handle_incoming_call(request: Request):
 # --- WebSocket Endpoint for Twilio Audio Stream ---
 @app.websocket("/twilio/audiostream/{call_sid}")
 async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
-    # ... (This function remains exactly the same) ...
+    """
+    Receives audio chunks (mu-law) from Twilio,
+    transcodes to linear16 PCM, and forwards to Hume EVI.
+    """
     try:
         await websocket.accept()
         log.info(f"--- Twilio WebSocket connected for CallSid: {call_sid} ---")
@@ -314,9 +311,12 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
 
 
 # --- Background Task to Listen to Hume ---
-@app.websocket("/listen_to_hume/{call_sid}") # This is actually just a task, not a public endpoint, but decorator is harmless for now
+@app.websocket("/listen_to_hume/{call_sid}") # This is actually just a task, not a public endpoint
 async def listen_to_hume(call_sid: str):
-    # ... (This function remains exactly the same, but I fixed a typo) ...
+    """
+    Listens for messages from Hume EVI.
+    Transcodes audio (WAV -> PCM -> mu-law) and forwards to Twilio.
+    """
     log.info(f"--- Started listening to Hume EVI for CallSid: {call_sid} ---")
     hume_ws = None
     resample_state = None
@@ -372,9 +372,7 @@ async def listen_to_hume(call_sid: str):
                                 pcm_bytes_8k, resample_state = audioop.ratecv(pcm_bytes_hume, samp_width_hume, 1, input_rate_hume, output_rate_twilio, resample_state)
                                 connection_details["resample_state"] = resample_state
                             
-                            # --- FIXED A TYPO HERE ---
                             mulaw_bytes = audioop.lin2ulaw(pcm_bytes_8k, samp_width_hume)
-                            # -------------------------
 
                             mulaw_b64 = base64.b64encode(mulaw_bytes).decode('utf-8')
                             twilio_media_message = {
@@ -391,8 +389,10 @@ async def listen_to_hume(call_sid: str):
                 elif hume_type in ("user_message", "assistant_message"):
                     role = hume_data.get("message", {}).get("role", "unknown")
                     content = hume_data.get("message", {}).get("content", "")
+                    # --- THIS IS THE CORRECTED LINE ---
                     transcript.append(f"{role.upper()}: {content}")
-                    log.info(f"    Transcript part added: {role.upper()}: {content[:3Of]...")
+                    log.info(f"    Transcript part added: {role.upper()}: {content[:30]}...")
+                    # ----------------------------------
 
                 elif hume_type == "tool_call":
                     tool_name = hume_data.get("tool_call", {}).get("name")
