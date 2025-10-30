@@ -89,7 +89,7 @@ async def handle_incoming_call(request: Request):
     Handles incoming Twilio calls using the "Variables" override method.
     1. Identifies the patient.
     2. Connects to Hume EVI via WebSocket, passing config_id in the URL.
-    3. Sends session_settings with dynamic *variables* for the prompt.
+    3. Sends session_settings with dynamic *variables* and enables web search tool.
     4. Responds to Twilio with TwiML to start audio streaming.
     """
     log.info("-" * 30)
@@ -117,7 +117,6 @@ async def handle_incoming_call(request: Request):
         log.info(f"--- Identified Patient: {patient_data.get('name', 'N/A')} ---")
 
         # --- 2. Connect to Hume EVI (with config_id in URL) ---
-        # This loads the config that has your *template prompt*
         uri_with_key_and_config = f"{HUME_EVI_WS_URI}?apiKey={HUME_API_KEY}&config_id={HUME_CONFIG_ID}"
         log.info(f"--- Connecting to WebSocket URL (with config_id): {HUME_EVI_WS_URI}?apiKey=[REDACTED]&config_id={HUME_CONFIG_ID} ---")
         
@@ -129,32 +128,39 @@ async def handle_incoming_call(request: Request):
             "hume_ws": hume_websocket, "twilio_ws": None, "stream_sid": None, "resample_state": None
         }
 
-        # --- 3. Send Initial Settings (with VARIABLES) ---
+        # --- 3. Send Initial Settings (with VARIABLES and TOOLS) ---
         conditions_list = ", ".join(patient_data.get('conditions', ['N/A']))
         medications_list = ", ".join(patient_data.get('medications', ['N/A']))
 
         initial_message = {
             "type": "session_settings",
-            # We are NOT sending "prompt" anymore
-            "variables": { # <-- NEW: Use the "variables" key
+            "variables": { # Fill in the blanks from our prompt
                 "patient_name": patient_data.get('name', 'the patient'),
                 "conditions": conditions_list,
                 "medications": medications_list
             },
-            "audio": { # We still need to send this for our use case
+            "audio": { # Required audio settings for Twilio
                 "encoding": "linear16",
                 "sample_rate": 8000,
                 "channels": 1
             },
-            # We can still override the voice if we want
-            "voice": {
+            "voice": { # Our specific "Sam" voice
                 "id": "97fe9008-8584-4d56-8453-bd8c7ead3663",
                 "provider": "HUME_AI"
             },
-            "evi_version": "3" # Let's keep this to ensure we use the right API version
+            "evi_version": "3", # Ensure we're on the right API version
+            
+            # --- NEW: Enable the built-in web search tool ---
+            "builtin_tools": [
+                {
+                    "name": "web_search",
+                    "fallback_content": "Sorry, I couldn't find any information on that right now."
+                }
+            ]
+            # ------------------------------------------------
         }
         await hume_websocket.send(json.dumps(initial_message))
-        log.info("--- Sent session_settings (using variables) to Hume EVI ---")
+        log.info("--- Sent session_settings (with variables and web_search) to Hume EVI ---")
 
         # Start the background task
         asyncio.create_task(listen_to_hume(call_sid))
@@ -182,6 +188,7 @@ async def handle_incoming_call(request: Request):
     response.pause(length=120)
     log.info("--- Responding to Twilio with TwiML <Connect><Stream> ---")
     return Response(content=str(response), media_type="text/xml")
+
 
 # --- WebSocket Endpoint for Twilio Audio Stream ---
 @app.websocket("/twilio/audiostream/{call_sid}")
