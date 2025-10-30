@@ -1,2 +1,5 @@
 venv/
 .env
+
+seed_firestore.py
+firebase-key.json

@@ -1,177 +1,319 @@
 import os
-from flask import Flask, render_template, request, abort, redirect, url_for
-from dummy_data import DUMMY_PATIENT_DB, DUMMY_CLINIC_INFO
-# We will need these for the click-to-call
+from flask import Flask, render_template, request, redirect, url_for, flash
+from dotenv import load_dotenv
 from twilio.rest import Client
-from urllib.parse import urljoin
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+# --- Initialization ---
+load_dotenv()
+
+# Initialize Firebase
+# This automatically uses the GOOGLE_APPLICATION_CREDENTIALS env var
+try:
+    cred_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if not os.path.exists(cred_path):
+        print(f"Warning: Firebase credentials file not found at {cred_path}. Using local 'firebase-key.json'.")
+        cred_path = 'firebase-key.json' # Fallback for local dev
+        if not os.path.exists(cred_path):
+            raise FileNotFoundError("No Firebase key found. Please set GOOGLE_APPLICATION_CREDENTIALS or place 'firebase-key.json' in the root.")
+
+    cred = credentials.Certificate(cred_path)
+    firebase_admin.initialize_app(cred)
+    db = firestore.client()
+    print("Firebase Firestore client initialized successfully.")
+except Exception as e:
+    print(f"CRITICAL: Failed to initialize Firebase. App may not function. Error: {e}")
+    db = None
+
+# Initialize Twilio
+twilio_sid = os.environ.get("TWILIO_ACCOUNT_SID")
+twilio_token = os.environ.get("TWILIO_AUTH_TOKEN")
+twilio_phone = os.environ.get("TWILIO_PHONE_NUMBER")
+render_backend_url = os.environ.get("RENDER_BACKEND_URL")
+twilio_client = Client(twilio_sid, twilio_token)
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "a_very_secret_default_key_fallback")
 
-# --- Twilio Configuration ---
-# We'll get these from our local .env file
-# Make sure to create a .env file locally with these values
-# (This file should be in your .gitignore and NOT pushed to GitHub)
-TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID')
-TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN')
-TWILIO_PHONE_NUMBER = os.environ.get('TWILIO_PHONE_NUMBER')
+# --- Helper Functions ---
 
-# This is the PUBLIC URL of your Render app (the backend)
-# e.g., "https://your-call-app.onrender.com"
-# We need this so Twilio knows what URL to use for the call logic.
-RENDER_BACKEND_URL = os.environ.get('RENDER_BACKEND_URL') 
-
-# Initialize Twilio Client
-# We only initialize if the keys are present, so the app doesn't crash
-if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
-    twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-else:
-    twilio_client = None
-    print("WARNING: Twilio credentials not found. Click-to-call will not work.")
-    print("Please set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in your .env file.")
-
-
-# Helper function to get clinic info
-def get_clinic_info(clinic_id):
-    """Fetches clinic info from the dummy clinic dict."""
-    return DUMMY_CLINIC_INFO.get(clinic_id)
-
-# Helper function to get patient data
-def get_patient_data(clinic_id, mrn):
-    """Fetches a single patient's data."""
-    clinic = DUMMY_PATIENT_DB.get(clinic_id)
-    if not clinic:
-        return None
-    return clinic.get(mrn)
+def get_all_clinics():
+    """Fetches all clinic documents from Firestore."""
+    if not db:
+        return {}
+    clinics_ref = db.collection('clinics')
+    clinics = {}
+    for doc in clinics_ref.stream():
+        clinics[doc.id] = doc.to_dict().get('clinic_name', 'Unnamed Clinic')
+    return clinics
 
 def get_all_patients_with_details():
-    """
-    Helper function to flatten the database for easier iteration in the template.
-    Returns a list of (clinic_info, patient_info) tuples.
-    """
+    """Fetches all patients from all clinics and their details."""
+    if not db:
+        return []
+    
     all_patients = []
-    for clinic_id, patients in DUMMY_PATIENT_DB.items():
-        clinic_info = get_clinic_info(clinic_id)
-        if not clinic_info:
-            continue
+    clinics_ref = db.collection('clinics')
+    for clinic_doc in clinics_ref.stream():
+        clinic_id = clinic_doc.id
+        clinic_name = clinic_doc.to_dict().get('clinic_name', 'Unnamed Clinic')
         
-        for mrn, patient_data in patients.items():
-            # Add clinic_id and mrn to the dictionaries for easy access
-            patient_data['mrn'] = mrn
-            clinic_info['clinic_id'] = clinic_id
-            all_patients.append((clinic_info, patient_data))
+        patients_ref = clinic_doc.reference.collection('patients')
+        for patient_doc in patients_ref.stream():
+            patient_data = patient_doc.to_dict()
+            patient_data['mrn'] = patient_doc.id
+            patient_data['clinic_id'] = clinic_id
+            patient_data['clinic_name'] = clinic_name
+            all_patients.append(patient_data)
+    
+    # Sort by name
+    all_patients.sort(key=lambda x: x.get('name', ''))
     return all_patients
+
+def get_patient_data(clinic_id, mrn):
+    """Fetches a single patient's data from Firestore."""
+    if not db:
+        return None
+    try:
+        doc_ref = db.collection('clinics').document(clinic_id).collection('patients').document(mrn)
+        doc = doc_ref.get()
+        if doc.exists:
+            return doc.to_dict()
+        else:
+            return None
+    except Exception as e:
+        print(f"Error getting patient data: {e}")
+        return None
+
+def get_clinic_info(clinic_id):
+    """Fetches a single clinic's info from Firestore."""
+    if not db:
+        return None
+    try:
+        doc_ref = db.collection('clinics').document(clinic_id)
+        doc = doc_ref.get()
+        if doc.exists:
+            return doc.to_dict()
+        else:
+            return None
+    except Exception as e:
+        print(f"Error getting clinic info: {e}")
+        return None
+        
+def _process_form_data(form_data):
+    """
+    Helper function to process form data from create/edit forms
+    into the correct EHR-style schema.
+    """
+    # Get list fields, filter out empty strings
+    medications = [med.strip() for med in form_data.getlist('medication') if med.strip()]
+    medical_conditions = [cond.strip() for cond in form_data.getlist('medical_condition') if cond.strip()]
+    allergies = [alg.strip() for alg in form_data.getlist('allergy') if alg.strip()]
+    procedures_history = [proc.strip() for proc in form_data.getlist('procedure') if proc.strip()]
+
+    # Get encounter fields
+    enc_dates = form_data.getlist('encounter_date')
+    enc_types = form_data.getlist('encounter_type')
+    enc_statuses = form_data.getlist('encounter_status')
+    enc_purposes = form_data.getlist('encounter_purpose')
+
+    # Rebuild the encounters dictionary
+    encounters_dict = {}
+    for date, type, status, purpose in zip(enc_dates, enc_types, enc_statuses, enc_purposes):
+        if date: # Only add if a date is provided
+            encounters_dict[date] = {
+                "type": type.strip(),
+                "status": status.strip(),
+                "purpose": purpose.strip()
+            }
+
+    # Build the final patient object for Firestore
+    patient_data = {
+        "name": form_data.get('name'),
+        "dob": form_data.get('dob'),
+        "phone": form_data.get('phone'),
+        "medications": medications,
+        "medical_conditions": medical_conditions,
+        "allergies": allergies,
+        "procedures_history": procedures_history,
+        "encounters": encounters_dict
+    }
+    return patient_data
+
+# --- Main Routes ---
 
 @app.route('/')
 def dashboard():
-    """
-    Main dashboard page.
-    Handles filtering by clinic and patient name.
-    """
-    # Get all patients
-    patients_list = get_all_patients_with_details()
-    
-    # Get filter criteria from URL (e.g., /?clinic_id=10001&patient_name=Jose)
-    clinic_filter = request.args.get('clinic_id')
-    name_filter = request.args.get('patient_name')
+    """Main dashboard, shows filterable list of all patients."""
+    query_name = request.args.get('name', '').lower()
+    query_clinic_id = request.args.get('clinic_id', '')
 
-    # Apply clinic filter
-    if clinic_filter:
-        patients_list = [
-            (c, p) for (c, p) in patients_list if c['clinic_id'] == clinic_filter
-        ]
+    all_patients = get_all_patients_with_details()
     
-    # Apply name filter (case-insensitive)
-    if name_filter:
-        patients_list = [
-            (c, p) for (c, p) in patients_list if name_filter.lower() in p['name'].lower()
-        ]
+    # Apply filters
+    filtered_patients = []
+    for patient in all_patients:
+        name_match = query_name in patient.get('name', '').lower()
+        clinic_match = not query_clinic_id or patient.get('clinic_id') == query_clinic_id
         
-    # Get a unique list of clinics for the filter dropdown
-    clinics = list(DUMMY_CLINIC_INFO.values())
+        if name_match and clinic_match:
+            filtered_patients.append(patient)
 
-    return render_template('dashboard.html', 
-                           patients_list=patients_list, 
-                           clinics=clinics,
-                           filters_applied={'clinic_id': clinic_filter, 'patient_name': name_filter},
-                           render_backend_url=RENDER_BACKEND_URL) # <-- ADD THIS
-
-
-@app.route('/patient/<clinic_id>/<mrn>')
-def patient_portal(clinic_id, mrn):
-    """
-    Shows the individual patient portal page (your existing route).
-    """
-    patient_data = get_patient_data(clinic_id, mrn)
-    if not patient_data:
-        abort(404, "Patient or Clinic not found.")
-    
-    clinic_info = get_clinic_info(clinic_id)
-    if not clinic_info:
-        abort(404, "Clinic not found.")
-
-    return render_template('patient_detail.html', 
-                           patient=patient_data, 
-                           clinic=clinic_info,
-                           mrn=mrn) # Pass mrn to the template
-
-# --- This is our NEW "Click-to-Call" Route ---
-# It's triggered by the "Call Patient" button
-@app.route('/call/<clinic_id>/<mrn>')
-def make_call(clinic_id, mrn):
-    """
-    Initiates an outbound call to the patient.
-    This route is hit by the user's browser (from the dashboard).
-    It then tells Twilio to:
-    1. Call the patient (or the override number).
-    2. When the patient answers, connect them to our *backend* Render app.
-    """
-    if not twilio_client or not RENDER_BACKEND_URL:
-        abort(500, "Twilio client or RENDER_BACKEND_URL is not configured.")
-
-    # 1. Get the patient's data
-    patient = get_patient_data(clinic_id, mrn)
-    if not patient:
-        abort(404, "Patient not found.")
-
-    # 2. Get the phone number to call
-    # This comes from the ?phone_to_call=... query parameter
-    # which our JavaScript (in dashboard.html) set for us.
-    phone_to_call = request.args.get('phone_to_call')
-    if not phone_to_call:
-        # Fallback just in case, but JS should always provide it
-        phone_to_call = patient['phone']
-
-    # 3. Construct the URL for our *backend* (Render) app
-    # This is the URL Twilio will call *after* the patient picks up.
-    # We pass the MRN and Clinic ID, which fixes our "MRN: None" error!
-    #
-    # THIS IS THE FIX: We are changing "/twilio/outgoing_call" to
-    # "/twilio/incoming_call" to match the route on call_app.py
-    backend_webhook_url = urljoin(
-        RENDER_BACKEND_URL, 
-        f"/twilio/incoming_call?mrn={mrn}&clinic_id={clinic_id}"
+    return render_template(
+        'dashboard.html',
+        patients=filtered_patients,
+        clinics=get_all_clinics(),
+        query_name=query_name,
+        query_clinic_id=query_clinic_id,
+        render_backend_url=render_backend_url
     )
 
+@app.route('/patient/<clinic_id>/<mrn>')
+def patient_detail(clinic_id, mrn):
+    """Shows the detailed portal for a single patient."""
+    patient = get_patient_data(clinic_id, mrn)
+    if not patient:
+        flash("Error: Patient or Clinic not found.", "error")
+        return redirect(url_for('dashboard'))
+        
+    clinic = get_clinic_info(clinic_id)
+    
+    # Sort encounters by date, newest first
+    sorted_encounters = sorted(
+        patient.get('encounters', {}).items(), 
+        key=lambda item: item[0], 
+        reverse=True
+    )
+    
+    return render_template(
+        'patient_detail.html',
+        patient=patient,
+        clinic=clinic,
+        mrn=mrn,
+        clinic_id=clinic_id,
+        sorted_encounters=sorted_encounters
+    )
+
+@app.route('/create_patient', methods=['GET', 'POST'])
+def create_patient():
+    """Serves the form to create a new patient and handles submission."""
+    if request.method == 'POST':
+        try:
+            clinic_id = request.form.get('clinic_id')
+            mrn = request.form.get('mrn')
+            
+            if not clinic_id or not mrn:
+                flash("Error: Clinic ID and MRN are required.", "error")
+                return redirect(url_for('create_patient'))
+
+            # Check if patient already exists
+            if get_patient_data(clinic_id, mrn):
+                flash(f"Error: Patient with MRN {mrn} already exists in this clinic.", "error")
+                return redirect(url_for('create_patient'))
+
+            # Process all form data into the new schema
+            patient_data = _process_form_data(request.form)
+            
+            # Save to Firestore
+            db.collection('clinics').document(clinic_id).collection('patients').document(mrn).set(patient_data)
+            
+            flash(f"Patient {patient_data['name']} created successfully!", "success")
+            return redirect(url_for('dashboard'))
+        
+        except Exception as e:
+            print(f"Error creating patient: {e}")
+            flash(f"An error occurred: {e}", "error")
+            return redirect(url_for('create_patient'))
+
+    # GET request: Show the form
+    return render_template('create_patient.html', clinics=get_all_clinics())
+
+
+@app.route('/edit_patient/<clinic_id>/<mrn>', methods=['GET', 'POST'])
+def edit_patient(clinic_id, mrn):
+    """Serves the form to edit an existing patient and handles submission."""
+    patient = get_patient_data(clinic_id, mrn)
+    if not patient:
+        flash("Error: Patient not found.", "error")
+        return redirect(url_for('dashboard'))
+
+    if request.method == 'POST':
+        try:
+            # Process all form data into the new schema
+            patient_data = _process_form_data(request.form)
+            
+            # Update in Firestore
+            db.collection('clinics').document(clinic_id).collection('patients').document(mrn).update(patient_data)
+            
+            flash(f"Patient {patient_data['name']} updated successfully!", "success")
+            return redirect(url_for('patient_detail', clinic_id=clinic_id, mrn=mrn))
+        
+        except Exception as e:
+            print(f"Error updating patient: {e}")
+            flash(f"An error occurred: {e}", "error")
+            return redirect(url_for('edit_patient', clinic_id=clinic_id, mrn=mrn))
+
+    # GET request: Show the form, pre-filled with patient data
+    
+    # Sort encounters by date for display
+    sorted_encounters = sorted(
+        patient.get('encounters', {}).items(), 
+        key=lambda item: item[0], 
+        reverse=True
+    )
+    
+    return render_template(
+        'edit_patient.html', 
+        patient=patient, 
+        clinic_id=clinic_id, 
+        mrn=mrn,
+        sorted_encounters=sorted_encounters
+    )
+
+
+@app.route('/call', methods=['POST'])
+def call_patient():
+    """
+    Places an outbound call to a patient (or demo number) via Twilio,
+    connecting them to the Render backend for the AI call.
+    """
+    patient_mrn = request.form.get('mrn')
+    clinic_id = request.form.get('clinic_id')
+    patient_phone = request.form.get('phone')
+    
+    # Check for demo override number
+    phone_override = request.form.get('phone_override')
+    call_to_number = phone_override if phone_override else patient_phone
+    
+    if not all([patient_mrn, clinic_id, call_to_number, render_backend_url, twilio_phone]):
+        flash("Error: Missing configuration for placing call.", "error")
+        return redirect(url_for('dashboard'))
+
     try:
-        # 4. Make the call!
+        # Construct the webhook URL for the backend
+        # This is where we pass the patient context!
+        webhook_url = f"{render_backend_url}/twilio/incoming_call?mrn={patient_mrn}&clinic_id={clinic_id}"
+
+        print(f"Placing call to: {call_to_number}")
+        print(f"Using webhook: {webhook_url}")
+
         call = twilio_client.calls.create(
-            to=phone_to_call,
-            from_=TWILIO_PHONE_NUMBER,
-            url=backend_webhook_url  # Tell Twilio what to do when the call connects
+            to=call_to_number,
+            from_=twilio_phone,
+            url=webhook_url,  # Twilio will POST to this URL when the call connects
+            method="POST"
         )
-        print(f"Initiated call to {phone_to_call} for MRN {mrn}. Call SID: {call.sid}")
+        
+        flash(f"Calling {call_to_number}... (Call SID: {call.sid})", "info")
 
     except Exception as e:
-        print(f"Error making call: {e}")
-        # In a real app, you'd show a proper error page
-        return f"Error making call: {e}", 500
+        print(f"Twilio call error: {e}")
+        flash(f"Error placing call: {e}", "error")
 
-    # 5. Redirect back to the dashboard
-    # This is a good user experience. The call is ringing in the background.
     return redirect(url_for('dashboard'))
 
+# --- Run Application ---
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080, debug=True)
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8080))
-    app.run(debug=True, host='0.0.0.0', port=port)
-    

@@ -1,203 +1,252 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="h-full bg-gray-50">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Patient Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <style>
+    <style type="text/tailwindcss">
         body { font-family: 'Inter', sans-serif; }
+        .btn { @apply inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white focus:outline-none focus:ring-2 focus:ring-offset-2; }
+        .btn-primary { @apply bg-blue-600 hover:bg-blue-700 focus:ring-blue-500; }
+        .btn-secondary { @apply bg-gray-600 hover:bg-gray-700 focus:ring-gray-500; }
+        .btn-secondary-sm { @apply px-3 py-1.5 text-xs; }
+        .btn-outline { @apply bg-white border-gray-300 text-gray-700 hover:bg-gray-50 focus:ring-indigo-500; }
+        .form-input { @apply block w-full shadow-sm sm:text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500; }
+        .form-select { @apply block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md; }
+        .alert { @apply p-4 rounded-md; }
+        .alert-success { @apply bg-green-100 text-green-700; }
+        .alert-error { @apply bg-red-100 text-red-700; }
+        .alert-info { @apply bg-blue-100 text-blue-700; }
+        .status-dot { @apply h-2.5 w-2.5 rounded-full mr-2; }
     </style>
 </head>
-<body class="bg-gray-100">
-
-    <div class="container mx-auto p-4 md:p-8">
-        <h1 class="text-3xl font-bold text-gray-900 mb-6">Patient Dashboard</h1>
-
-        <!-- Filter Section -->
-        <div class="mb-6 p-6 bg-white rounded-lg shadow">
-            <h2 class="text-xl font-semibold mb-4">Filters</h2>
-            <form action="/" method="GET" class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                    <label for="patient_name" class="block text-sm font-medium text-gray-700">Patient Name</label>
-                    <input type="text" name="patient_name" id="patient_name"
-                           value="{{ filters_applied.patient_name or '' }}"
-                           class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
-                </div>
-                <div>
-                    <label for="clinic_id" class="block text-sm font-medium text-gray-700">Clinic</label>
-                    <select name="clinic_id" id="clinic_id"
-                            class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
-                        <option value="">All Clinics</option>
-                        {% for clinic in clinics %}
-                        <option value="{{ clinic.clinic_id }}" {% if filters_applied.clinic_id == clinic.clinic_id|string %}selected{% endif %}>
-                            {{ clinic.clinic_name }}
-                        </option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div class="flex items-end space-x-2">
-                    <button type="submit"
-                            class="w-full md:w-auto inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
-                        Apply Filter
-                    </button>
-                    <a href="/"
-                       class="w-full md:w-auto inline-flex justify-center py-2 px-4 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-                        Clear
-                    </a>
-                </div>
-            </form>
-        </div>
-
-        <!-- Demo Phone Override -->
-        <div class="mb-6 p-6 bg-white rounded-lg shadow">
-            <h2 class="text-xl font-semibold mb-4">Demo Settings</h2>
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
-                <div>
-                    <label for="override_phone" class="block text-sm font-medium text-gray-700">Demo Phone Override</label>
-                    <input type="text" name="override_phone" id="override_phone"
-                           placeholder="e.g., +15558675309"
-                           class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
-                    <p class="mt-1 text-xs text-gray-500">If filled, all calls will go to this number.</p>
-                </div>
-                <!-- NEW WAKE-UP BUTTON -->
-                <div>
-                    <button id="wake-up-btn" onclick="wakeUpServer()"
-                            class="w-full inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-                        Wake Up Server
-                    </button>
-                    <p id="wake-up-status" class="mt-1 text-xs text-gray-500">Click this 30s before a call.</p>
+<body class="h-full">
+    <div class="min-h-full">
+        <nav class="bg-white shadow-sm">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div class="flex justify-between h-16">
+                    <div class="flex">
+                        <div class="flex-shrink-0 flex items-center">
+                            <svg class="h-8 w-auto text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
+                            </svg>
+                            <span class="ml-2 text-xl font-bold text-gray-800">AI Health Dashboard</span>
+                        </div>
+                    </div>
                 </div>
             </div>
-        </div>
+        </nav>
 
+        <div class="py-10">
+            <header class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div class="md:flex md:items-center md:justify-between">
+                    <div class="flex-1 min-w-0">
+                        <h1 class="text-3xl font-bold leading-tight text-gray-900">Patient Directory</h1>
+                    </div>
+                    <div class="mt-4 flex md:mt-0 md:ml-4">
+                        <a href="{{ url_for('create_patient') }}" class="btn btn-primary">
+                            Create New Patient
+                        </a>
+                    </div>
+                </div>
+            </header>
 
-        <!-- Patient List -->
-        <div class="bg-white rounded-lg shadow overflow-hidden">
-            <div class="overflow-x-auto">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-50">
-                        <tr>
-                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Patient Name</th>
-                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">MRN</th>
-                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Clinic</th>
-                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Phone</th>
-                            <th scope="col" class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody class="bg-white divide-y divide-gray-200">
-                        {% for clinic, patient in patients_list %}
-                        <tr>
-                            <td class="px-6 py-4 whitespace-nowrap">
-                                <div class="text-sm font-medium text-gray-900">{{ patient.name }}</div>
-                                <div class="text-sm text-gray-500">{{ patient.dob }}</div>
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ patient.mrn }}</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ clinic.clinic_name }}</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ patient.phone }}</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-center text-sm font-medium space-x-2">
-                                <!-- This is our next step! -->
-                                <button onclick="callPatient('{{ clinic.clinic_id }}', '{{ patient.mrn }}', '{{ patient.phone }}')"
-                                   class="text-white bg-green-600 hover:bg-green-700 font-medium rounded-md text-sm px-4 py-2">
-                                    Call Patient
-                                </button>
-                                <a href="/patient/{{ clinic.clinic_id }}/{{ patient.mrn }}"
-                                   class="text-blue-600 hover:text-blue-900">
-                                    View Portal
-                                </a>
-                            </td>
-                        </tr>
-                        {% else %}
-                        <tr>
-                            <td colspan="5" class="px-6 py-12 text-center text-sm text-gray-500">
-                                No patients found matching your criteria.
-                            </td>
-                        </tr>
+            <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <!-- Flash Messages -->
+                {% with messages = get_flashed_messages(with_categories=true) %}
+                    {% if messages %}
+                        <div class="my-4 space-y-2">
+                        {% for category, message in messages %}
+                            <div class="alert alert-{{ category }}">
+                                {{ message }}
+                            </div>
                         {% endfor %}
-                    </tbody>
-                </table>
-            </div>
+                        </div>
+                    {% endif %}
+                {% endwith %}
+
+                <!-- Filters & Demo Tools -->
+                <div class="my-6 p-4 bg-white shadow rounded-lg">
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                        <!-- Filter Form -->
+                        <form method="GET" action="{{ url_for('dashboard') }}" class="md:col-span-3 grid grid-cols-1 sm:grid-cols-3 gap-4">
+                            <div>
+                                <label for="name" class="block text-sm font-medium text-gray-700">Filter by Name</label>
+                                <input type="text" name="name" id="name" class="form-input mt-1" value="{{ query_name or '' }}" placeholder="Enter name...">
+                            </div>
+                            <div>
+                                <label for="clinic_id" class="block text-sm font-medium text-gray-700">Filter by Clinic</label>
+                                <select name="clinic_id" id="clinic_id" class="form-select mt-1">
+                                    <option value="">All Clinics</option>
+                                    {% for id, name in clinics.items() %}
+                                    <option value="{{ id }}" {% if id == query_clinic_id %}selected{% endif %}>{{ name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div class="self-end">
+                                <button type="submit" class="btn btn-primary w-full sm:w-auto">Apply Filter</button>
+                                <a href="{{ url_for('dashboard') }}" class="btn btn-outline ml-2">Clear</a>
+                            </div>
+                        </form>
+                        
+                        <!-- Demo Tools -->
+                        <div class="md:col-span-1 border-t md:border-t-0 md:border-l pl-0 md:pl-4 pt-4 md:pt-0">
+                            <label for="phone_override" class="block text-sm font-medium text-gray-700">Demo Phone Override</label>
+                            <input type="tel" id="phone_override" class="form-input mt-1" placeholder="Enter your phone # for demo...">
+                            <p class="mt-1 text-xs text-gray-500">Number to call *instead* of patient's.</p>
+                            
+                            <button id="wakeUpBtn" type="button" class="btn btn-secondary w-full mt-3">
+                                <span class="status-dot bg-gray-400" id="wakeUpStatus"></span>
+                                <span id="wakeUpText">Wake Up Server</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Patient List -->
+                <div class="flex flex-col">
+                    <div class="-my-2 overflow-x-auto sm:-mx-6 lg:-mx-8">
+                        <div class="py-2 align-middle inline-block min-w-full sm:px-6 lg:px-8">
+                            <div class="shadow overflow-hidden border-b border-gray-200 sm:rounded-lg">
+                                <table class="min-w-full divide-y divide-gray-200">
+                                    <thead class="bg-gray-50">
+                                        <tr>
+                                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Clinic / MRN</th>
+                                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Phone</th>
+                                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Next Action</th>
+                                            <th scope="col" class="relative px-6 py-3">
+                                                <span class="sr-only">Actions</span>
+                                            </th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="bg-white divide-y divide-gray-200">
+                                        {% for patient in patients %}
+                                        <tr>
+                                            <td class="px-6 py-4 whitespace-nowrap">
+                                                <div class="text-sm font-medium text-gray-900">{{ patient.name }}</div>
+                                                <div class="text-sm text-gray-500">DOB: {{ patient.dob }}</div>
+                                            </td>
+                                            <td class="px-6 py-4 whitespace-nowrap">
+                                                <div class="text-sm text-gray-900">{{ patient.clinic_name }}</div>
+                                                <div class="text-sm text-gray-500">MRN: {{ patient.mrn }}</div>
+                                            </td>
+                                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ patient.phone }}</td>
+                                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                                <!-- 
+                                                  TEMPLATE FIX: Added 'is defined' check.
+                                                  This prevents a template render error if a patient has no 'encounters' key.
+                                                -->
+                                                {% if patient.encounters is defined and patient.encounters %}
+                                                    {% set next_appt = patient.encounters.items() | selectattr('1.status', 'equalto', 'scheduled') | list | sort(attribute='0') | first %}
+                                                    {% if next_appt %}
+                                                        <div class="text-sm text-gray-900">{{ next_appt[0] }}</div>
+                                                        <div class="text-sm text-gray-500">{{ next_appt[1].type }}</div>
+                                                    {% else %}
+                                                        <span class="text-sm text-gray-400">No scheduled appts</span>
+                                                    {% endif %}
+                                                {% else %}
+                                                    <span class="text-sm text-gray-400">No encounters</span>
+                                                {% endif %}
+                                            </td>
+                                            <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
+                                                <!-- 
+                                                  STYLE FIX: Added the base 'btn' class to all buttons.
+                                                  This provides the default styles, including 'text-white'.
+                                                -->
+                                                <form action="{{ url_for('call_patient') }}" method="POST" class="inline-block">
+                                                    <input type="hidden" name="mrn" value="{{ patient.mrn }}">
+                                                    <input type="hidden" name="clinic_id" value="{{ patient.clinic_id }}">
+                                                    <input type="hidden" name="phone" value="{{ patient.phone }}">
+                                                    <input type="hidden" name="phone_override" class="phone-override-input" value="">
+                                                    <button type="submit" class="btn btn-primary btn-secondary-sm">Call Patient</button>
+                                                </form>
+                                                <a href="{{ url_for('edit_patient', clinic_id=patient.clinic_id, mrn=patient.mrn) }}" class="btn btn-secondary btn-secondary-sm">Edit</a>
+                                                <a href="{{ url_for('patient_detail', clinic_id=patient.clinic_id, mrn=patient.mrn) }}" class="btn btn-outline btn-secondary-sm">View Portal</a>
+                                            </td>
+                                        </tr>
+                                        {% else %}
+                                        <tr>
+                                            <td colspan="5" class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 text-center">
+                                                No patients found matching criteria.
+                                            </td>
+                                        </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </main>
         </div>
     </div>
 
     <script>
-        // This is our new "wake up" function
-        function wakeUpServer() {
-            const btn = document.getElementById('wake-up-btn');
-            const status = document.getElementById('wake-up-status');
-            
-            // This URL is passed in from our Python app
-            const backendUrl = "{{ render_backend_url }}";
+        console.log("Dashboard script loaded."); // Added for debugging
+        const wakeUpBtn = document.getElementById('wakeUpBtn');
+        const wakeUpStatus = document.getElementById('wakeUpStatus');
+        const wakeUpText = document.getElementById('wakeUpText'); // FIX: Grab the text span
+        const renderUrl = "{{ render_backend_url }}";
 
-            if (!backendUrl) {
-                status.textContent = "Error: RENDER_BACKEND_URL is not set.";
-                status.classList.add('text-red-600');
-                return;
-            }
+        async function wakeUpServer() {
+            wakeUpBtn.disabled = true;
+            wakeUpStatus.classList.remove('bg-gray-400', 'bg-green-500', 'bg-red-500');
+            wakeUpStatus.classList.add('bg-yellow-500', 'animate-pulse');
+            wakeUpText.textContent = " Waking up..."; // FIX: Set text content directly
 
-            // We will add this /wake-up route to our backend in the next step
-            const wakeUpUrl = new URL('/wake-up', backendUrl).href;
-
-            btn.disabled = true;
-            btn.textContent = "Waking up...";
-            status.textContent = "Pinging server...";
-            status.classList.remove('text-red-600', 'text-green-600');
-
-            fetch(wakeUpUrl)
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error(`Server responded with ${response.status}`);
+            try {
+                const response = await fetch(`${renderUrl}/wake-up`, {
+                    method: 'GET',
+                    headers: {
+                        'Accept': 'application/json',
                     }
-                    return response.json();
-                })
-                .then(data => {
-                    if (data.status === 'awake') {
-                        btn.textContent = "Server is Awake!";
-                        status.textContent = "Server is awake and ready for calls.";
-                        status.classList.add('text-green-600');
-                    } else {
-                        throw new Error("Unknown server response.");
-                    }
-                })
-                .catch(error => {
-                    console.error("Wake-up error:", error);
-                    btn.textContent = "Wake Up Server";
-                    status.textContent = `Error: ${error.message}`;
-                    status.classList.add('text-red-600');
-                })
-                .finally(() => {
-                    btn.disabled = false;
-                    // Reset the button after a few seconds
-                    setTimeout(() => {
-                        btn.textContent = "Wake Up Server";
-                    }, 5000);
                 });
-        }
 
-        function callPatient(clinicId, mrn, patientPhone) {
-            const overridePhoneInput = document.getElementById('override_phone');
-            const overridePhone = overridePhoneInput.value;
-
-            // Determine which phone number to use
-            // We pass this to the backend, which will make the *actual* call.
-            // The patient's real phone is the default.
-            let phoneToCall = patientPhone;
-            
-            // If the override field is filled, use that instead.
-            if (overridePhone) {
-                phoneToCall = overridePhone;
+                if (response.ok) {
+                    const data = await response.json();
+                    wakeUpStatus.classList.remove('bg-yellow-500', 'animate-pulse');
+                    wakeUpStatus.classList.add('bg-green-500');
+                    wakeUpText.textContent = " Server Awake"; // FIX: Set text content directly
+                } else {
+                    throw new Error(`Server responded with status: ${response.status}`);
+                }
+            } catch (error) {
+                console.error('Wake up error:', error);
+                wakeUpStatus.classList.remove('bg-yellow-500', 'animate-pulse');
+                wakeUpStatus.classList.add('bg-red-500');
+                wakeUpText.textContent = " Wake Up Failed"; // FIX: Set text content directly
+                // Show the error on the page for debugging
+                const errorMsg = document.createElement('p');
+                errorMsg.className = 'text-xs text-red-600 mt-1';
+                errorMsg.textContent = `Error: ${error.message}. Check console & CORS.`;
+                wakeUpBtn.parentElement.appendChild(errorMsg);
+            } finally {
+                wakeUpBtn.disabled = false;
+                setTimeout(() => {
+                    wakeUpStatus.classList.remove('bg-green-500', 'bg-red-500', 'bg-yellow-500', 'animate-pulse');
+                    wakeUpStatus.classList.add('bg-gray-400');
+                    wakeUpText.textContent = " Wake Up Server"; // FIX: Set text content directly
+                }, 5000);
             }
-
-            // Construct the URL and redirect to trigger the call
-            // The backend /call route will handle the rest.
-            let url = `/call/${clinicId}/${mrn}?phone_to_call=${encodeURIComponent(phoneToCall)}`;
-            
-            window.location.href = url;
         }
-    </script>
+        wakeUpBtn.addEventListener('click', wakeUpServer);
 
+        // Update all "Call" buttons with the override number when their form is submitted
+        const overrideInput = document.getElementById('phone_override');
+        const callForms = document.querySelectorAll("form[action=\"{{ url_for('call_patient') }}\"]");
+        
+        callForms.forEach(form => {
+            form.addEventListener('submit', function() {
+                const overrideValue = overrideInput.value.trim();
+                if (overrideValue) {
+                    form.querySelector('.phone-override-input').value = overrideValue;
+                }
+            });
+        });
+    </script>
 </body>
 </html>
-
 

@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-50">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edit: {{ patient.name }}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- This is the fix: added type="text/tailwindcss" -->
+    <style type="text/tailwindcss">
+        body { font-family: 'Inter', sans-serif; }
+        .btn { @apply inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white focus:outline-none focus:ring-2 focus:ring-offset-2; }
+        .btn-primary { @apply bg-blue-600 hover:bg-blue-700 focus:ring-blue-500; }
+        .btn-secondary { @apply bg-gray-600 hover:bg-gray-700 focus:ring-gray-500; }
+        .btn-secondary-sm { @apply px-3 py-1.5 text-xs; }
+        .btn-danger-sm { @apply bg-red-600 hover:bg-red-700 focus:ring-red-500 px-3 py-1.5 text-xs text-white rounded; }
+        .form-input { @apply block w-full shadow-sm sm:text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500; }
+        .form-select { @apply block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md; }
+        .form-label { @apply block text-sm font-medium text-gray-700; }
+        .card { @apply bg-white shadow overflow-hidden sm:rounded-lg; }
+        .card-header { @apply px-4 py-5 sm:px-6 border-b border-gray-200; }
+        .card-title { @apply text-lg leading-6 font-medium text-gray-900; }
+        .card-content { @apply px-4 py-5 sm:p-6; }
+    </style>
+</head>
+<body class="h-full">
+    <div class="min-h-full">
+        <nav class="bg-white shadow-sm">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div class="flex justify-between h-16">
+                    <div class="flex">
+                        <div class="flex-shrink-0 flex items-center">
+                            <svg class="h-8 w-auto text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
+                            </svg>
+                            <span class="ml-2 text-xl font-bold text-gray-800">AI Health Dashboard</span>
+                        </div>
+                    </div>
+                    <div class="flex items-center">
+                        <a href="{{ url_for('patient_detail', clinic_id=clinic_id, mrn=mrn) }}" class="text-sm font-medium text-gray-500 hover:text-gray-700">
+                            &larr; Back to Patient Portal
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </nav>
+
+        <div class="py-10">
+            <header class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+                <h1 class="text-3xl font-bold leading-tight text-gray-900">Edit Patient: {{ patient.name }}</h1>
+            </header>
+
+            <main class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 mt-6">
+                <!-- Flash Messages -->
+                {% with messages = get_flashed_messages(with_categories=true) %}
+                    {% if messages %}
+                        <div class="my-4 space-y-2">
+                        {% for category, message in messages %}
+                            <div class="p-4 rounded-md bg-{{ 'red' if category == 'error' else 'green' }}-100 text-{{ 'red' if category == 'error' else 'green' }}-700">
+                                {{ message }}
+                            </div>
+                        {% endfor %}
+                        </div>
+                    {% endif %}
+                {% endwith %}
+
+                <form action="{{ url_for('edit_patient', clinic_id=clinic_id, mrn=mrn) }}" method="POST">
+                    <div class="space-y-6">
+                        <!-- Demographics -->
+                        <div class="card">
+                            <div class="card-header">
+                                <h3 class="card-title">Patient Demographics</h3>
+                            </div>
+                            <div class="card-content grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div>
+                                    <label class="form-label">Clinic</label>
+                                    <p class="mt-1 text-sm text-gray-700 py-2 px-3 bg-gray-100 rounded-md">{{ clinic.clinic_name if clinic else clinic_id }}</p>
+                                </div>
+                                <div>
+                                    <label class="form-label">MRN</label>
+                                    <p class="mt-1 text-sm text-gray-700 py-2 px-3 bg-gray-100 rounded-md">{{ mrn }}</p>
+                                </div>
+                                <div class="md:col-span-2">
+                                    <label for="name" class="form-label">Full Name *</label>
+                                    <input type="text" name="name" id="name" class="form-input mt-1" value="{{ patient.name }}" required>
+                                </div>
+                                <div>
+                                    <label for="dob" class="form-label">Date of Birth</label>
+                                    <input type="date" name="dob" id="dob" class="form-input mt-1" value="{{ patient.dob }}">
+                                </div>
+                                <div>
+                                    <label for="phone" class="form-label">Phone Number</label>
+                                    <input type="tel" name="phone" id="phone" class="form-input mt-1" value="{{ patient.phone }}">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Dynamic List Sections -->
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <!-- Medical Conditions -->
+                            <div class="card">
+                                <div class="card-header flex justify-between items-center">
+                                    <h3 class="card-title">Medical Conditions</h3>
+                                    <button type="button" onclick="addDynamicField('conditions-container', 'medical_condition', 'Condition')" class="btn-secondary-sm">Add</button>
+                                </div>
+                                <div class="card-content space-y-2" id="conditions-container">
+                                    {% for condition in patient.medical_conditions %}
+                                    <div class="flex items-center space-x-2">
+                                        <input type="text" name="medical_condition" class="form-input flex-grow" value="{{ condition }}">
+                                        <button type="button" onclick="removeField(this)" class="btn-danger-sm">Remove</button>
+                                    </div>
+                                    {% endfor %}
+                                    {% if not patient.medical_conditions %}
+                                    <p class="text-xs text-gray-500">Click "Add" to add a new condition.</p>
+                                    {% endif %}
+                                </div>
+                            </div>
+
+                            <!-- Medications -->
+                            <div class="card">
+                                <div class="card-header flex justify-between items-center">
+                                    <h3 class="card-title">Medications</h3>
+                                    <button type="button" onclick="addDynamicField('medications-container', 'medication', 'Medication')" class="btn-secondary-sm">Add</button>
+                                </div>
+                                <div class="card-content space-y-2" id="medications-container">
+                                    {% for med in patient.medications %}
+                                    <div class="flex items-center space-x-2">
+                                        <input type="text" name="medication" class="form-input flex-grow" value="{{ med }}">
+                                        <button type="button" onclick="removeField(this)" class="btn-danger-sm">Remove</button>
+                                    </div>
+                                    {% endfor %}
+                                    {% if not patient.medications %}
+                                    <p class="text-xs text-gray-500">Click "Add" to add a new medication.</p>
+                                    {% endif %}
+                                </div>
+                            </div>
+
+                            <!-- Allergies -->
+                            <div class="card">
+                                <div class="card-header flex justify-between items-center">
+                                    <h3 class="card-title">Allergies</h3>
+                                    <button type="button" onclick="addDynamicField('allergies-container', 'allergy', 'Allergy')" class="btn-secondary-sm">Add</button>
+                                </div>
+                                <div class="card-content space-y-2" id="allergies-container">
+                                    {% for allergy in patient.allergies %}
+                                    <div class="flex items-center space-x-2">
+                                        <input type="text" name="allergy" class="form-input flex-grow" value="{{ allergy }}">
+                                        <button type="button" onclick="removeField(this)" class="btn-danger-sm">Remove</button>
+                                    </div>
+                                    {% endfor %}
+                                    {% if not patient.allergies %}
+                                    <p class="text-xs text-gray-500">Click "Add" to add a new allergy.</p>
+                                    {% endif %}
+                                </div>
+                            </div>
+
+                            <!-- Procedures History -->
+                            <div class="card">
+                                <div class="card-header flex justify-between items-center">
+                                    <h3 class="card-title">Procedures History</h3>
+                                    <button type="button" onclick="addDynamicField('procedures-container', 'procedure', 'Procedure')" class="btn-secondary-sm">Add</button>
+                                </div>
+                                <div class="card-content space-y-2" id="procedures-container">
+                                    {% for proc in patient.procedures_history %}
+                                    <div class="flex items-center space-x-2">
+                                        <input type="text" name="procedure" class="form-input flex-grow" value="{{ proc }}">
+                                        <button type="button" onclick="removeField(this)" class="btn-danger-sm">Remove</button>
+                                    </div>
+                                    {% endfor %}
+                                    {% if not patient.procedures_history %}
+                                    <p class="text-xs text-gray-500">Click "Add" to add a new procedure.</p>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Encounters -->
+                        <div class="card">
+                            <div class="card-header flex justify-between items-center">
+                                <h3 class="card-title">Encounters</h3>
+                                <button type="button" onclick="addEncounterField()" class="btn-secondary-sm">Add Encounter</button>
+                            </div>
+                            <div class="card-content space-y-3" id="encounters-container">
+                                <!-- Dynamic encounters will be added here -->
+                                {% for date, details in sorted_encounters %}
+                                <div class="p-3 border rounded-lg mb-3 space-y-2 bg-gray-50">
+                                    <div class="flex justify-between items-center">
+                                        <label class="block text-sm font-medium text-gray-700">Existing Encounter</label>
+                                        <button type="button" onclick="removeField(this)" class="btn-danger-sm">Remove</button>
+                                    </div>
+                                    <div class="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label class="form-label text-xs">Date</label>
+                                            <input type="date" name="encounter_date" class="form-input" value="{{ date }}">
+                                        </div>
+                                        <div>
+                                            <label class="form-label text-xs">Status</label>
+                                            <select name="encounter_status" class="form-input">
+                                                <option value="scheduled" {% if details.status == 'scheduled' %}selected{% endif %}>Scheduled</option>
+                                                <option value="signed" {% if details.status == 'signed' %}selected{% endif %}>Signed</option>
+                                                <option value="cancelled" {% if details.status == 'cancelled' %}selected{% endif %}>Cancelled</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label class="form-label text-xs">Type</label>
+                                        <input type="text" name="encounter_type" class="form-input" value="{{ details.type }}">
+                                    </div>
+                                    <div>
+                                        <label class="form-label text-xs">Purpose</label>
+                                        <input type="text" name="encounter_purpose" class="form-input" value="{{ details.purpose }}">
+                                    </div>
+                                </div>
+                                {% endfor %}
+                                {% if not sorted_encounters %}
+                                <p class="text-xs text-gray-500">Click "Add Encounter" to add a new entry.</p>
+                                {% endif %}
+                            </div>
+                        </div>
+
+                        <!-- Submit Button -->
+                        <div class="flex justify-end pt-4">
+                            <a href="{{ url_for('patient_detail', clinic_id=clinic_id, mrn=mrn) }}" class="btn btn-secondary mr-3">Cancel</a>
+                            <button type="submit" class="btn btn-primary">Save Changes</button>
+                        </div>
+                    </div>
+                </form>
+            </main>
+        </div>
+    </div>
+
+    <!-- The JavaScript is identical to create_patient.html -->
+    <script>
+        function addDynamicField(containerId, inputName, placeholder) {
+            // Find the container
+            const container = document.getElementById(containerId);
+            
+            // Remove the placeholder text if it exists
+            const p = container.querySelector('p');
+            if (p) p.remove();
+
+            // Create new elements
+            const div = document.createElement('div');
+            div.className = 'flex items-center space-x-2';
+            
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.name = inputName;
+            input.className = 'form-input flex-grow';
+            input.placeholder = `e.g., ${placeholder}`;
+            
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'btn-danger-sm';
+            button.textContent = 'Remove';
+            button.onclick = function() {
+                removeField(this);
+            };
+            
+            // Append elements
+            div.appendChild(input);
+            div.appendChild(button);
+            container.appendChild(div);
+            input.focus();
+        }
+
+        function removeField(button) {
+            button.parentElement.remove();
+        }
+
+        function addEncounterField() {
+            // Find the container
+            const container = document.getElementById('encounters-container');
+            
+            // Remove the placeholder text if it exists
+            const p = container.querySelector('p');
+            if (p) p.remove();
+
+            // Create new elements
+            const div = document.createElement('div');
+            div.className = 'p-3 border rounded-lg mb-3 space-y-2 bg-gray-50';
+            div.innerHTML = `
+                <div class="flex justify-between items-center">
+                    <label class="block text-sm font-medium text-gray-700">New Encounter</label>
+                    <button type="button" onclick="removeField(this)" class="btn-danger-sm">Remove</button>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="form-label text-xs">Date</label>
+                        <input type="date" name="encounter_date" class="form-input">
+                    </div>
+                    <div>
+                        <label class="form-label text-xs">Status</label>
+                        <select name="encounter_status" class="form-input">
+                            <option value="scheduled">Scheduled</option>
+                            <option value="signed">Signed</option>
+                            <option value="cancelled">Cancelled</option>
+                        </select>
+                    </div>
+                </div>
+                <div>
+                    <label class="form-label text-xs">Type</label>
+                    <input type="text" name="encounter_type" class="form-input" placeholder="e.g., Annual Physical">
+                </div>
+                <div>
+                    <label class="form-label text-xs">Purpose</label>
+                    <input type="text" name="encounter_purpose" class="form-input" placeholder="e.g., Routine Check-up">
+                </div>
+            `;
+            container.appendChild(div);
+        }
+    </script>
+</body>
+</html>
+

@@ -1,93 +1,206 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="h-full bg-gray-50">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Patient Portal</title>
-    <!-- Load Tailwind CSS -->
+    <title>Patient Portal: {{ patient.name }}</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        /* A simple style for the appointment list */
-        .appointment-card {
-            border-left: 4px solid #3B82F6; /* blue-500 */
-        }
+        body { font-family: 'Inter', sans-serif; }
+        .btn { @apply inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white focus:outline-none focus:ring-2 focus:ring-offset-2; }
+        .btn-primary { @apply bg-blue-600 hover:bg-blue-700 focus:ring-blue-500; }
+        .btn-secondary { @apply bg-gray-600 hover:bg-gray-700 focus:ring-gray-500; }
+        .card { @apply bg-white shadow overflow-hidden sm:rounded-lg; }
+        .card-header { @apply px-4 py-5 sm:px-6 border-b border-gray-200; }
+        .card-title { @apply text-lg leading-6 font-medium text-gray-900; }
+        .card-content { @apply px-4 py-5 sm:p-6; }
+        .status-dot { @apply h-2.5 w-2.5 rounded-full mr-2 inline-block; }
     </style>
 </head>
-<body class="bg-gray-100 font-sans">
-
-    <div class="container mx-auto max-w-4xl my-12 p-4">
-        
-        <!-- Main Card -->
-        <div class="bg-white shadow-xl rounded-lg overflow-hidden">
-            
-            <!-- 1. Clinic Header -->
-            <div class="bg-gray-800 p-6 text-white">
-                <h1 class="text-3xl font-bold">{{ clinic.clinic_name }}</h1>
-                <p class="text-lg text-gray-300 mt-1">{{ clinic.clinic_address }} | {{ clinic.clinic_phone }}</p>
-            </div>
-            
-            <!-- 2. Patient Demographics -->
-            <div class="p-8 border-b border-gray-200">
-                <h2 class="text-2xl font-semibold text-gray-700 mb-6">Patient Information</h2>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4">
-                    <div>
-                        <span class="text-sm font-medium text-gray-500 block">Full Name</span>
-                        <span class="text-lg font-semibold text-gray-900">{{ patient.name }}</span>
+<body class="h-full">
+    <div class="min-h-full">
+        <nav class="bg-white shadow-sm">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div class="flex justify-between h-16">
+                    <div class="flex">
+                        <div class="flex-shrink-0 flex items-center">
+                            <svg class="h-8 w-auto text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
+                            </svg>
+                            <span class="ml-2 text-xl font-bold text-gray-800">AI Health Dashboard</span>
+                        </div>
                     </div>
-                    <div>
-                        <span class="text-sm font-medium text-gray-500 block">Date of Birth</span>
-                        <span class="text-lg font-semibold text-gray-900">{{ patient.dob }}</span>
-                    </div>
-                    <div>
-                        <span class="text-sm font-medium text-gray-500 block">MRN</span>
-                        <span class="text-lg font-semibold text-gray-900">{{ mrn }}</span>
-                    </div>
-                    <div>
-                        <span class="text-sm font-medium text-gray-500 block">Gender</span>
-                        <span class="text-lg font-semibold text-gray-900">{{ patient.gender }}</span>
-                    </div>
-                    <div>
-                        <span class="text-sm font-medium text-gray-500 block">Phone</span>
-                        <span class="text-lg font-semibold text-gray-900">{{ patient.phone }}</span>
-                    </div>
-                    <div>
-                        <span class="text-sm font-medium text-gray-500 block">Email</span>
-                        <span class="text-lg font-semibold text-gray-900">{{ patient.email }}</span>
+                    <div class="flex items-center">
+                        <a href="{{ url_for('dashboard') }}" class="text-sm font-medium text-gray-500 hover:text-gray-700">
+                            &larr; Back to Dashboard
+                        </a>
                     </div>
                 </div>
             </div>
-            
-            <!-- 3. Appointments Section -->
-            <div class="p-8">
-                <h2 class="text-2xl font-semibold text-gray-700 mb-6">Upcoming Appointments</h2>
-                <div class="space-y-4">
-                    
-                    <!-- Loop through each appointment -->
-                    {% for appt in patient.appointments %}
-                    <div class="bg-gray-50 p-4 rounded-lg shadow-sm appointment-card">
-                        <div class="flex flex-col md:flex-row justify-between">
-                            <div>
-                                <p class="text-lg font-bold text-blue-600">{{ appt.reason }}</p>
-                                <p class="text-md text-gray-700">with {{ appt.doctor }}</p>
+        </nav>
+
+        <div class="py-10">
+            <header class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <!-- Flash Messages -->
+                {% with messages = get_flashed_messages(with_categories=true) %}
+                    {% if messages %}
+                        <div class="mb-4 space-y-2">
+                        {% for category, message in messages %}
+                            <div class="p-4 rounded-md bg-{{ 'green' if category == 'success' else 'red' }}-100 text-{{ 'green' if category == 'success' else 'red' }}-700">
+                                {{ message }}
                             </div>
-                            <div class="text-left md:text-right mt-2 md:mt-0">
-                                <p class="text-lg font-semibold text-gray-900">{{ appt.date }}</p>
-                                <p class="text-md text-gray-600">{{ appt.time }}</p>
+                        {% endfor %}
+                        </div>
+                    {% endif %}
+                {% endwith %}
+
+                <div class="md:flex md:items-center md:justify-between pb-4 border-b border-gray-200">
+                    <div class="flex-1 min-w-0">
+                        <h1 class="text-3xl font-bold leading-tight text-gray-900">{{ patient.name }}</h1>
+                        <p class="mt-1 text-sm text-gray-500">
+                            DOB: {{ patient.dob }}  |  MRN: {{ mrn }}  |  Clinic: {{ clinic.clinic_name }}
+                        </p>
+                    </div>
+                    <div class="mt-4 flex md:mt-0 md:ml-4">
+                        <a href="{{ url_for('edit_patient', clinic_id=clinic_id, mrn=mrn) }}" class="btn btn-secondary">
+                            Edit Patient
+                        </a>
+                    </div>
+                </div>
+            </header>
+
+            <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    
+                    <!-- Left Column: Patient Details -->
+                    <div class="md:col-span-1 space-y-6">
+                        <div class="card">
+                            <div class="card-header">
+                                <h3 class="card-title">Patient Info</h3>
+                            </div>
+                            <div class="card-content">
+                                <dl class="grid grid-cols-1 gap-x-4 gap-y-4">
+                                    <div class="sm:col-span-1">
+                                        <dt class="text-sm font-medium text-gray-500">Phone</dt>
+                                        <dd class="mt-1 text-sm text-gray-900">{{ patient.phone }}</dd>
+                                    </div>
+                                    <div class="sm:col-span-1">
+                                        <dt class="text-sm font-medium text-gray-500">Allergies</dt>
+                                        <dd class="mt-1 text-sm text-gray-900">
+                                            {% if patient.allergies %}
+                                                <ul class="list-disc list-inside">
+                                                {% for allergy in patient.allergies %}
+                                                    <li>{{ allergy }}</li>
+                                                {% endfor %}
+                                                </ul>
+                                            {% else %}
+                                                No Known Allergies
+                                            {% endif %}
+                                        </dd>
+                                    </div>
+                                </dl>
+                            </div>
+                        </div>
+
+                        <div class="card">
+                            <div class="card-header">
+                                <h3 class="card-title">Medical History</h3>
+                            </div>
+                            <div class="card-content space-y-4">
+                                <div>
+                                    <h4 class="text-sm font-medium text-gray-500">Medical Conditions</h4>
+                                    <div class="mt-1 text-sm text-gray-900">
+                                        {% if patient.medical_conditions %}
+                                            <ul class="list-disc list-inside">
+                                            {% for condition in patient.medical_conditions %}
+                                                <li>{{ condition }}</li>
+                                            {% endfor %}
+                                            </ul>
+                                        {% else %}
+                                            None
+                                        {% endif %}
+                                    </div>
+                                </div>
+                                <div>
+                                    <h4 class="text-sm font-medium text-gray-500">Procedures History</h4>
+                                    <div class="mt-1 text-sm text-gray-900">
+                                        {% if patient.procedures_history %}
+                                            <ul class="list-disc list-inside">
+                                            {% for proc in patient.procedures_history %}
+                                                <li>{{ proc }}</li>
+                                            {% endfor %}
+                                            </ul>
+                                        {% else %}
+                                            None
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="card">
+                            <div class="card-header">
+                                <h3 class="card-title">Medications</h3>
+                            </div>
+                            <div class="card-content">
+                                {% if patient.medications %}
+                                    <ul class="list-disc list-inside text-sm text-gray-900">
+                                    {% for med in patient.medications %}
+                                        <li>{{ med }}</li>
+                                    {% endfor %}
+                                    </ul>
+                                {% else %}
+                                    <p class="text-sm text-gray-500">No active medications.</p>
+                                {% endif %}
                             </div>
                         </div>
                     </div>
-                    {% else %}
-                    <!-- This shows if there are no appointments -->
-                    <div class="bg-gray-50 p-4 rounded-lg text-gray-500 text-center">
-                        No upcoming appointments.
+
+                    <!-- Right Column: Encounters -->
+                    <div class="md:col-span-2">
+                        <div class="card">
+                            <div class="card-header">
+                                <h3 class="card-title">Encounters</h3>
+                            </div>
+                            <div class="card-content p-0">
+                                <ul role="list" class="divide-y divide-gray-200">
+                                    {% for date, details in sorted_encounters %}
+                                    <li class="px-4 py-4 sm:px-6">
+                                        <div class="flex space-x-3">
+                                            <div class="flex-1 space-y-1">
+                                                <div class="flex items-center justify-between">
+                                                    <h3 class="text-base font-medium text-gray-900">{{ details.type }}</h3>
+                                                    <p class="text-sm text-gray-500">{{ date }}</p>
+                                                </div>
+                                                <p class="text-sm text-gray-700">
+                                                    Purpose: {{ details.purpose }}
+                                                </p>
+                                                <p class="text-sm text-gray-500">
+                                                    {% if details.status == 'signed' %}
+                                                        <span class="status-dot bg-green-500"></span>Signed
+                                                    {% elif details.status == 'scheduled' %}
+                                                        <span class="status-dot bg-blue-500"></span>Scheduled
+                                                    {% else %}
+                                                        <span class="status-dot bg-gray-400"></span>{{ details.status | capitalize }}
+                                                    {% endif %}
+                                                </p>
+                                            </div>
+                                        </div>
+                                    </li>
+                                    {% else %}
+                                    <li class="py-4 text-sm text-gray-500 text-center">
+                                        No encounters on file.
+                                    </li>
+                                    {% endfor %}
+                                </ul>
+                            </div>
+                        </div>
                     </div>
-                    {% endfor %}
-                    
+
                 </div>
-            </div>
-            
+            </main>
         </div>
     </div>
-
 </body>
 </html>
