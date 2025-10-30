@@ -1,25 +1,25 @@
---- FastAPI Server ---
+# --- FastAPI Server ---
 
 fastapi
 uvicorn
 python-dotenv
 python-multipart
 
---- Twilio & Hume ---
+# --- Twilio & Hume ---
 
 twilio
 hume
 websocket-client
 
---- Databases & Storage ---
+# --- Databases & Storage ---
 
 firebase-admin
 boto3
 
---- General Utilities ---
+# --- General Utilities ---
 
 requests
 
---- Flask Web Portal ---
+# --- Flask Web Portal ---
 
 flask
