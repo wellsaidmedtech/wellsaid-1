@@ -44,7 +44,9 @@ except Exception as e:
     twilio_client = None
 
 # --- Patient Database with MRN as Key ---
-patient_mrn = str(random.randint(10000000, 99999999))
+# --- UPDATED: Hard-coded MRN for testing ---
+patient_mrn = "89728342" # Use a consistent MRN
+# ----------------------------------------
 
 DUMMY_PATIENT_DB = {
     patient_mrn: { # Key is the patient's MRN
@@ -68,7 +70,7 @@ def get_patient_info_by_phone(phone_number: str) -> dict | None:
         return None
     for mrn, data in DUMMY_PATIENT_DB.items():
         if data.get("phone_number") == phone_number:
-            return {"mrn": mrn, **data} # Return data *with* its key
+            return {"mrn": mrn, **data}
     return None
 
 def get_patient_info_by_mrn(mrn: str) -> dict | None:
@@ -79,7 +81,6 @@ def get_patient_info_by_mrn(mrn: str) -> dict | None:
     if data:
         return {"mrn": mrn, **data}
     return None
-# ---------------------------------
 
 # --- WebSocket Connection Management ---
 active_connections = {} 
@@ -104,40 +105,41 @@ async def root():
     return {"message": "Healthcare AI Server (FastAPI) is running!"}
 
 # --- Endpoint to Initiate Outbound Call ---
+# --- UPDATED: Pydantic model now expects 'mrn' ---
 class StartCallRequest(BaseModel):
-    patient_phone_number: str
+    mrn: str
+# ---------------------------------------------
 
 @app.post("/api/start_call")
 async def start_outbound_call(call_request: StartCallRequest):
     """
-    Triggers an outbound call to a patient.
-    Passes the patient's MRN in the webhook URL.
+    Triggers an outbound call to a patient using their MRN.
     """
-    patient_number = call_request.patient_phone_number
-    log.info(f"--- Received request to call patient at: {patient_number} ---")
+    mrn = call_request.mrn
+    log.info(f"--- Received request to call patient with MRN: {mrn} ---")
 
     if not twilio_client:
         log.error("--- Cannot place call: Twilio client is not initialized. ---")
         raise HTTPException(status_code=500, detail="Twilio client not initialized. Check server logs.")
 
-    # 1. Find the patient by phone to get their MRN
-    patient_data = get_patient_info_by_phone(patient_number)
+    # --- UPDATED: Find patient by MRN ---
+    patient_data = get_patient_info_by_mrn(mrn)
     if not patient_data:
-        log.error(f"--- Cannot place call: Patient number {patient_number} not found in database. ---")
-        raise HTTPException(status_code=404, detail="Patient phone number not found in database.")
+        log.error(f"--- Cannot place call: MRN {mrn} not found in database. ---")
+        raise HTTPException(status_code=404, detail="Patient MRN not found in database.")
     
-    patient_mrn = patient_data.get("mrn")
-    if not patient_mrn:
-        log.error(f"--- Cannot place call: Patient {patient_number} has no MRN. ---")
-        raise HTTPException(status_code=500, detail="Patient data is corrupt, no MRN found.")
+    # --- UPDATED: Get phone number *from* patient data ---
+    patient_number = patient_data.get("phone_number")
+    if not patient_number:
+        log.error(f"--- Cannot place call: Patient {mrn} has no phone number. ---")
+        raise HTTPException(status_code=400, detail="Patient record has no phone number.")
+    # ----------------------------------------------------
 
     try:
-        # --- CRITICAL CHANGE ---
-        # We add the MRN as a query parameter to the webhook URL
-        webhook_url = f"https://{RENDER_APP_HOSTNAME}/twilio/incoming_call?mrn={patient_mrn}"
-        # -----------------------
+        # This part is correct: we pass the MRN to the webhook
+        webhook_url = f"https://{RENDER_APP_HOSTNAME}/twilio/incoming_call?mrn={mrn}"
         
-        log.info(f"--- Initiating outbound call via Twilio to {patient_number} ---")
+        log.info(f"--- Initiating outbound call via Twilio to {patient_number} (for MRN {mrn}) ---")
         log.info(f"--- Twilio will call this webhook on answer: {webhook_url} ---")
 
         call = twilio_client.calls.create(
@@ -153,7 +155,7 @@ async def start_outbound_call(call_request: StartCallRequest):
                 "message": "Call initiated successfully.",
                 "patient_called": patient_number,
                 "call_sid": call.sid,
-                "mrn_sent": patient_mrn
+                "mrn_sent": mrn
             }
         )
     except Exception as e:
@@ -165,36 +167,30 @@ async def start_outbound_call(call_request: StartCallRequest):
 async def handle_incoming_call(request: Request):
     """
     This webhook is hit by Twilio when the outbound call is answered.
-    It now *gets the patient's MRN from the URL* instead of the 'From' number.
+    It now *gets the patient's MRN from the URL*.
     """
     log.info("-" * 30)
     log.info(">>> Twilio Call Webhook Received (Inbound or Outbound-Answered) <<<")
-    call_sid = None # Initialize call_sid
+    call_sid = None
     try:
         form_data = await request.form()
         call_sid = form_data.get('CallSid')
-        from_number = form_data.get('From') # We still log this, but don't use it for lookup
+        from_number = form_data.get('From')
         
-        # --- CRITICAL CHANGE ---
-        # Get the MRN we passed in the URL from the /api/start_call function
+        # Get the MRN we passed in the URL
         mrn = request.query_params.get('mrn')
-        # -----------------------
 
-        if not call_sid:
-             log.error("--- ERROR: Missing CallSid in Twilio request. ---")
+        if not call_sid or not mrn:
+             log.error(f"--- ERROR: Missing CallSid or MRN in request. CallSid: {call_sid}, MRN: {mrn} ---")
              raise HTTPException(status_code=400, detail="Missing required call information")
-        if not mrn:
-             log.error(f"--- ERROR: Missing MRN in webhook URL for CallSid: {call_sid}. ---")
-             raise HTTPException(status_code=400, detail="Missing MRN in webhook query parameters.")
 
         log.info(f"  Call SID: {call_sid}")
         log.info(f"  Call From (Patient Number): {from_number}")
         log.info(f"  Looking up patient by MRN: {mrn}")
 
-        # --- 1. Identify Patient (UPDATED: Use new MRN lookup) ---
+        # --- 1. Identify Patient (using MRN) ---
         patient_data = get_patient_info_by_mrn(mrn)
         if not patient_data:
-            # This should almost never happen if the /api/start_call logic is correct
             log.error(f"--- CRITICAL ERROR: Could not find patient for MRN {mrn}. ---")
             response = VoiceResponse()
             response.say("Sorry, we had a system error and could not retrieve your records. Please call our main office.", voice='alice')
@@ -221,6 +217,22 @@ async def handle_incoming_call(request: Request):
         # --- 3. Send Initial Settings (with VARIABLES) ---
         conditions_list = ", ".join(patient_data.get('medical_conditions', ['N/A']))
         medications_list = ", ".join(patient_data.get('current_medications', ['N/A']))
+        
+        # Define the tool parameters schema as a Python dict first
+        tool_params_schema = {
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "A one or two-sentence summary of the patient's concern and the call's outcome."
+                },
+                "action_statement": {
+                    "type": "string",
+                    "description": "The final categorized action. Must be one of: 'EMERGENCY_911', 'REFILL_REQUEST', 'NOTE_FOR_REVIEW', or 'VERIFICATION_FAILED'."
+                }
+            },
+            "required": ["summary", "action_statement"]
+        }
 
         initial_message = {
             "type": "session_settings",
@@ -249,19 +261,13 @@ async def handle_incoming_call(request: Request):
                     "type": "function",
                     "name": "end_call_triage",
                     "description": "Call this tool at the end of the conversation to summarize the call and log the final action.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "summary": { "type": "string" },
-                            "action_statement": { "type": "string" }
-                        },
-                        "required": ["summary", "action_statement"]
-                    }
+                    # Stringify the parameters object
+                    "parameters": json.dumps(tool_params_schema)
                 }
             ]
         }
         await hume_websocket.send(json.dumps(initial_message))
-        log.info("--- Sent session_settings (with variables and custom tool) to Hume EVI ---")
+        log.info("--- Sent session_settings (with variables and *stringified* tool params) to Hume EVI ---")
 
         asyncio.create_task(listen_to_hume(call_sid))
 
@@ -285,10 +291,7 @@ async def handle_incoming_call(request: Request):
 # --- WebSocket Endpoint for Twilio Audio Stream ---
 @app.websocket("/twilio/audiostream/{call_sid}")
 async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
-    """
-    Receives audio chunks (mu-law) from Twilio,
-    transcodes to linear16 PCM, and forwards to Hume EVI.
-    """
+    # ... (This function remains exactly the same) ...
     try:
         await websocket.accept()
         log.info(f"--- Twilio WebSocket connected for CallSid: {call_sid} ---")
@@ -341,12 +344,9 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
 
 
 # --- Background Task to Listen to Hume ---
-@app.websocket("/listen_to_hume/{call_sid}")
+@app.websocket("/listen_to_hume/{call_sid}") # This decorator is harmless
 async def listen_to_hume(call_sid: str):
-    """
-    Listens for messages from Hume EVI.
-    Transcodes audio (WAV -> PCM -> mu-law) and forwards to Twilio.
-    """
+    # ... (This function is corrected for typos) ...
     log.info(f"--- Started listening to Hume EVI for CallSid: {call_sid} ---")
     hume_ws = None
     resample_state = None
@@ -402,6 +402,7 @@ async def listen_to_hume(call_sid: str):
                                 pcm_bytes_8k, resample_state = audioop.ratecv(pcm_bytes_hume, samp_width_hume, 1, input_rate_hume, output_rate_twilio, resample_state)
                                 connection_details["resample_state"] = resample_state
                             
+                            # --- Typo fix: samp_width_hume ---
                             mulaw_bytes = audioop.lin2ulaw(pcm_bytes_8k, samp_width_hume)
 
                             mulaw_b64 = base64.b64encode(mulaw_bytes).decode('utf-8')
@@ -412,13 +413,15 @@ async def listen_to_hume(call_sid: str):
                             }
                             await twilio_ws.send_text(json.dumps(twilio_media_message))
                         except Exception as e:
-                             log.error(f"    UNEXPECTED ERROR in Hume audio processing for {call_lid}: {type(e).__name__} - {e}")
+                             log.error(f"    UNEXPECTED ERROR in Hume audio processing for {call_sid}: {type(e).__name__} - {e}")
                     else:
                         log.warning(f"--- Hume sent audio, but Twilio WS/stream_sid not ready for {call_sid}. Skipping. ---")
 
                 elif hume_type in ("user_message", "assistant_message"):
                     role = hume_data.get("message", {}).get("role", "unknown")
                     content = hume_data.get("message", {}).get("content", "")
+                    
+                    # --- Typo fix: {content[:30]} ---
                     transcript.append(f"{role.upper()}: {content}")
                     log.info(f"    Transcript part added: {role.upper()}: {content[:30]}...")
 
