@@ -104,19 +104,13 @@ TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER")
 
 # --- NEW: Firebase Initialization ---
 try:
-    # Render's Secret Files are mounted at this path
-    cred_path = "/etc/secrets/firebase_credentials.json"
-    if not os.path.exists(cred_path):
-        log.warning("Firebase credentials file not found at /etc/secrets/firebase_credentials.json. Using local dummy path.")
-        # Fallback for local development (if you place the key in the same directory)
-        cred_path = "firebase_credentials.json" 
-
-    cred = credentials.Certificate(cred_path)
-    firebase_admin.initialize_app(cred)
+    # We don't need to pass any credentials! The SDK handles it.
+    firebase_admin.initialize_app() 
     db = firestore.client()
-    log.info("Firebase Firestore client initialized successfully.")
+    logging.info("Firebase Firestore client initialized successfully via GOOGLE_APPLICATION_CREDENTIALS.")
 except Exception as e:
-    log.critical(f"FATAL: Failed to initialize Firebase: {e}. Database will not work.", exc_info=True)
+    # If it fails, log the real error.
+    logging.error(f"Failed to initialize Firebase. Is GOOGLE_APPLICATION_CREDENTIALS set correctly? Error: {e}")
     db = None
 # ------------------------------------
 
