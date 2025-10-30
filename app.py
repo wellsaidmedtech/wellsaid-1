@@ -18,6 +18,71 @@ from pydantic import BaseModel
 import firebase_admin # <-- NEW
 from firebase_admin import credentials, firestore # <-- NEW
 
+# Patient Data Import
+try:
+    from dummy_data import DUMMY_PATIENT_DB
+except ImportError:
+    print("Error: dummy_data.py not found. Please create it with the DUMMY_PATIENT_DB dictionary.")
+
+# Clinic Helper Functions
+def get_patient_data(clinic_id, mrn):
+    """
+    Retrieves a specific patient's data from a specific clinic.
+
+    Args:
+        clinic_id (str): The 5-digit ID of the clinic.
+        mrn (str): The patient's Medical Record Number (MRN),
+                   which is unique within that clinic.
+
+    Returns:
+        dict: A dictionary containing the patient's data if found,
+              otherwise None.
+    """
+    print(f"Attempting to fetch data for Clinic ID: {clinic_id}, MRN: {mrn}")
+    
+    # 1. Find the clinic by its ID
+    clinic = DUMMY_PATIENT_DB.get(clinic_id)
+    
+    if not clinic:
+        print(f"Error: Clinic with ID '{clinic_id}' not found.")
+        return None  # Clinic not found
+    
+    # 2. Find the patient within that clinic's patient dictionary
+    # We use .get("patients", {}) to safely handle cases where a
+    # clinic might exist but have no "patients" key (bad data).
+    patient = clinic.get("patients", {}).get(mrn)
+    
+    if not patient:
+        print(f"Error: Patient with MRN '{mrn}' not found in clinic '{clinic_id}'.")
+        return None # Patient not found in this clinic
+
+    print(f"Successfully found patient: {patient.get('name')}")
+    return patient
+
+def get_clinic_info(clinic_id):
+    """
+    Retrieves a clinic's general information (name, phone, etc.)
+    excluding the full patient list.
+
+    Args:
+        clinic_id (str): The 5-digit ID of the clinic.
+
+    Returns:
+        dict: A dictionary with clinic info if found, otherwise None.
+    """
+    clinic_data = DUMMY_PATIENT_DB.get(clinic_id)
+    
+    if not clinic_data:
+        print(f"Error: Clinic with ID '{clinic_id}' not found.")
+        return None
+        
+    # Create a copy to avoid modifying the original
+    # and remove the sensitive/large patient list.
+    info = clinic_data.copy()
+    info.pop('patients', None) # Remove 'patients' key safely
+    
+    return info
+
 # --- Basic Logging Setup ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [%(funcName)s:%(lineno)d] %(message)s")
 log = logging.getLogger(__name__)
