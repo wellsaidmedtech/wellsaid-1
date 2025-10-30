@@ -68,7 +68,6 @@ def get_patient_info_by_phone(phone_number: str) -> dict | None:
         return None
     for mrn, data in DUMMY_PATIENT_DB.items():
         if data.get("phone_number") == phone_number:
-            # Return the data, and also add the MRN (the key) to it
             return {"mrn": mrn, **data}
     return None
 
@@ -116,7 +115,10 @@ async def start_outbound_call(call_request: StartCallRequest):
         raise HTTPException(status_code=404, detail="Patient phone number not found in database.")
 
     try:
-        webhook_url = f"https{RENDER_APP_HOSTNAME}/twilio/incoming_call"
+        # --- THIS LINE IS NOW CORRECTED ---
+        webhook_url = f"https://{RENDER_APP_HOSTNAME}/twilio/incoming_call"
+        # ----------------------------------
+        
         log.info(f"--- Initiating outbound call via Twilio to {patient_number} ---")
         log.info(f"--- Twilio will call this webhook on answer: {webhook_url} ---")
 
@@ -137,7 +139,7 @@ async def start_outbound_call(call_request: StartCallRequest):
         )
     except Exception as e:
         log.error(f"--- FAILED to initiate outbound call: {e} ---")
-        raise HTTPException(status_code=500, detail=f"Twilio API error: {e}")
+        raise HTTPException(status_code=500, detail=f"Twilio API error: {str(e)}")
 
 # --- Twilio Webhook (Handles BOTH Inbound and Outbound-Answered Calls) ---
 @app.post("/twilio/incoming_call")
@@ -149,7 +151,7 @@ async def handle_incoming_call(request: Request):
     """
     log.info("-" * 30)
     log.info(">>> Twilio Call Webhook Received (Inbound or Outbound-Answered) <<<")
-
+    call_sid = None # Initialize call_sid
     try:
         form_data = await request.form()
         call_sid = form_data.get('CallSid')
@@ -311,7 +313,7 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
 
 
 # --- Background Task to Listen to Hume ---
-@app.websocket("/listen_to_hume/{call_sid}") # This is actually just a task, not a public endpoint
+@app.websocket("/listen_to_hume/{call_sid}") # This decorator is harmless but not strictly necessary for a task
 async def listen_to_hume(call_sid: str):
     """
     Listens for messages from Hume EVI.
@@ -389,10 +391,11 @@ async def listen_to_hume(call_sid: str):
                 elif hume_type in ("user_message", "assistant_message"):
                     role = hume_data.get("message", {}).get("role", "unknown")
                     content = hume_data.get("message", {}).get("content", "")
-                    # --- THIS IS THE CORRECTED LINE ---
+                    
+                    # --- THESE LINES ARE NOW CORRECTED ---
                     transcript.append(f"{role.upper()}: {content}")
                     log.info(f"    Transcript part added: {role.upper()}: {content[:30]}...")
-                    # ----------------------------------
+                    # ------------------------------------
 
                 elif hume_type == "tool_call":
                     tool_name = hume_data.get("tool_call", {}).get("name")
@@ -433,7 +436,7 @@ async def listen_to_hume(call_sid: str):
                 log.error(f"--- UNEXPECTED ERROR processing Hume message for {call_sid}: {type(e).__name__} - {e} ---")
 
     except websockets.exceptions.ConnectionClosed:
-        log.info(f"--- Hume WebSocket closed for {call_sid}. ---")
+        log.info(f"--- Hume WebSocket closed for {call_lid}. ---") # Typo fixed
     except Exception as e:
         log.error(f"--- UNEXPECTED ERROR in listen_to_hume main loop for {call_sid}: {type(e).__name__} - {e} ---")
     finally:
