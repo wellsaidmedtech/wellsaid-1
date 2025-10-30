@@ -200,7 +200,11 @@ async def handle_incoming_call(request: Request):
         log.info(f"--- Identified Patient: {patient_data.get('name', 'N/A')} (MRN: {patient_data.get('mrn', 'N/A')}) ---")
 
         # --- 2. Connect to Hume EVI (with config_id in URL) ---
-        uri_with_key_and_config = f"{HUME_EVI_WS_URI}?apiKey={HUME_API_KEY}&config_id={HUME_CONFIG_ID}"
+        uri_with_key_and_config = (
+            f"{HUME_EVI_WS_URI}?apiKey={HUME_API_KEY}"
+            f"&config_id={HUME_CONFIG_ID}"
+            f"&verbose_transcription=true" 
+        )
         log.info(f"--- Connecting to WebSocket URL (with config_id): {HUME_EVI_WS_URI}?apiKey=[REDACTED]&config_id={HUME_CONFIG_ID} ---")
         
         hume_websocket = await websockets.connect(uri_with_key_and_config)
@@ -211,7 +215,8 @@ async def handle_incoming_call(request: Request):
             "twilio_ws": None,
             "stream_sid": None,
             "resample_state": None,
-            "transcript": [] 
+            "transcript": [], 
+            "is_interrupted": False
         }
 
         # --- 3. Send Initial Settings (with VARIABLES) ---
@@ -344,13 +349,21 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
 
 
 # --- Background Task to Listen to Hume ---
-@app.websocket("/listen_to_hume/{call_sid}") # This decorator is harmless
+@app.websocket("/listen_to_hume/{call_sid}") # This decorator is harmless but not strictly necessary for a task
 async def listen_to_hume(call_sid: str):
-    # ... (This function is corrected for typos) ...
+    """
+    Listens for messages from Hume EVI.
+    - Handles barge-in/interruptions by stopping audio playback.
+    - Collects transcript data.
+    - Handles audio transcoding (WAV -> PCM -> mu-law) and forwards to Twilio.
+    - Catches the final 'tool_call' to log the summary.
+    """
     log.info(f"--- Started listening to Hume EVI for CallSid: {call_sid} ---")
     hume_ws = None
     resample_state = None
     transcript = []
+    # --- Local variable to track interruption state ---
+    is_interrupted = False
 
     try:
         connection_details = active_connections.get(call_sid)
@@ -359,6 +372,8 @@ async def listen_to_hume(call_sid: str):
             return
         hume_ws = connection_details["hume_ws"]
         transcript = connection_details.get("transcript", [])
+        # --- Initialize local flag from connection state ---
+        is_interrupted = connection_details.get("is_interrupted", False)
 
 
         async for message_str in hume_ws:
@@ -366,15 +381,23 @@ async def listen_to_hume(call_sid: str):
             if not connection_details:
                  log.warning(f"--- listen_to_hume: Connection for {call_sid} disappeared. Exiting task. ---")
                  break
-            
+            # --- Update local flag each loop iteration ---
+            is_interrupted = connection_details.get("is_interrupted", False)
+
             try:
                 hume_data = json.loads(message_str)
                 hume_type = hume_data.get("type")
 
-                if hume_type != "audio_output":
+                # Log non-audio events, unless it's an interim user message (too noisy)
+                if hume_type != "audio_output" and not (hume_type == "user_message" and hume_data.get("message", {}).get("metadata", {}).get("interim")):
                     log.info(f"--- Hume Event: {hume_type} ---")
 
+                # --- Handle Audio Output (Check interruption flag) ---
                 if hume_type == "audio_output":
+                    if is_interrupted:
+                        log.info("--- Skipping Hume audio_output due to interruption ---")
+                        continue # Don't process or send this audio chunk
+
                     twilio_ws = connection_details.get("twilio_ws")
                     stream_sid = connection_details.get("stream_sid")
 
@@ -401,10 +424,8 @@ async def listen_to_hume(call_sid: str):
                                 resample_state = connection_details.get("resample_state")
                                 pcm_bytes_8k, resample_state = audioop.ratecv(pcm_bytes_hume, samp_width_hume, 1, input_rate_hume, output_rate_twilio, resample_state)
                                 connection_details["resample_state"] = resample_state
-                            
-                            # --- Typo fix: samp_width_hume ---
-                            mulaw_bytes = audioop.lin2ulaw(pcm_bytes_8k, samp_width_hume)
 
+                            mulaw_bytes = audioop.lin2ulaw(pcm_bytes_8k, samp_width_hume)
                             mulaw_b64 = base64.b64encode(mulaw_bytes).decode('utf-8')
                             twilio_media_message = {
                                 "event": "media",
@@ -417,30 +438,66 @@ async def listen_to_hume(call_sid: str):
                     else:
                         log.warning(f"--- Hume sent audio, but Twilio WS/stream_sid not ready for {call_sid}. Skipping. ---")
 
+                # --- Handle Transcript Messages (Check for interim, manage flag) ---
                 elif hume_type in ("user_message", "assistant_message"):
                     role = hume_data.get("message", {}).get("role", "unknown")
                     content = hume_data.get("message", {}).get("content", "")
-                    
-                    # --- Typo fix: {content[:30]} ---
-                    transcript.append(f"{role.upper()}: {content}")
-                    log.info(f"    Transcript part added: {role.upper()}: {content[:30]}...")
+                    is_interim = hume_data.get("message", {}).get("metadata", {}).get("interim", False)
 
+                    if role == "user" and is_interim:
+                        # User started speaking (or is still speaking) - set interruption
+                        if connection_details and not is_interrupted: # Only log/set flag once per interruption
+                            log.info("--- Interim user_message detected - Setting interruption flag ---")
+                            connection_details["is_interrupted"] = True
+                            is_interrupted = True
+                        # log.info(f"    Interim Transcript: {content[:50]}...") # Optional: Log interim for debugging
+                    elif role == "user" and not is_interim:
+                        # User finished speaking - reset interruption flag
+                        if connection_details:
+                             if is_interrupted: # Log only if it was previously set
+                                 log.info("--- Final user_message received - Resetting interruption flag ---")
+                             connection_details["is_interrupted"] = False
+                             is_interrupted = False
+                        transcript.append(f"USER: {content}")
+                        log.info(f"    Transcript part added: USER: {content[:30]}...")
+                    elif role == "assistant":
+                         # Assistant started speaking - reset interruption flag
+                         if connection_details:
+                             if is_interrupted: # Log only if it was previously set
+                                 log.info("--- Assistant message received - Resetting interruption flag ---")
+                             connection_details["is_interrupted"] = False
+                             is_interrupted = False
+                         transcript.append(f"ASSISTANT: {content}")
+                         log.info(f"    Transcript part added: ASSISTANT: {content[:30]}...")
+
+                # --- Handle Explicit Interruption Event ---
+                elif hume_type == "user_interruption":
+                    log.warning("--- Explicit user_interruption event received - Setting interruption flag ---")
+                    if connection_details:
+                        connection_details["is_interrupted"] = True
+                        is_interrupted = True
+
+                # --- Handle Tool Call (Reset flag) ---
                 elif hume_type == "tool_call":
                     tool_name = hume_data.get("tool_call", {}).get("name")
                     if tool_name == "end_call_triage":
                         log.info("--- Hume requested 'end_call_triage' tool ---")
+                        # Ensure interruption flag is reset before processing tool response
+                        if connection_details:
+                            connection_details["is_interrupted"] = False
+                            is_interrupted = False
                         try:
                             args_str = hume_data.get("tool_call", {}).get("parameters", "{}")
                             args = json.loads(args_str)
                             summary = args.get("summary", "N/A")
                             action_statement = args.get("action_statement", "N/A")
-                            
+
                             log.info("--- 📞 FINAL CALL SUMMARY DATA ---")
                             log.info(f"  Call SID: {call_sid}")
                             log.info(f"  Transcript:\n{json.dumps(transcript, indent=2)}")
                             log.info(f"  Summary: {summary}")
                             log.info(f"  Action Statement: {action_statement}")
-                            
+
                             tool_response_message = {
                                 "type": "tool_response",
                                 "tool_call_id": hume_data.get("tool_call", {}).get("tool_call_id"),
@@ -448,14 +505,12 @@ async def listen_to_hume(call_sid: str):
                             }
                             await hume_ws.send(json.dumps(tool_response_message))
                             log.info("--- Sent tool_response back to Hume ---")
+                            log.info("--- Waiting for Hume's final response... ---") # Added log line
 
-                            # --- ADD THIS LOG ---
-                            log.info("--- Waiting for Hume's final response... ---")
-                            # ------------------
-                            
                         except Exception as e:
                             log.error(f"    ERROR processing tool call: {e}")
 
+                # --- Handle Errors ---
                 elif hume_type == "error":
                     log.error(f"--- Hume EVI Error (Full Message): {hume_data} ---")
                     if hume_data.get('code', '').startswith('E'):
