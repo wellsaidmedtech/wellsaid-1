@@ -125,8 +125,15 @@ if all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN]):
 # ... (rest of config checks) ...
 
 
-# --- DUMMY_PATIENT_DB is now REMOVED ---
-# We will create a function to add our dummy patient to Firestore if it doesn't exist
+# --- For Render - Wake Client ---
+@app.get("/wake-up")
+async def wake_up():
+    """
+    A simple GET endpoint that Render's free tier can hit
+    to wake up the server from a cold start.
+    """
+    return JSONResponse(content={"status": "awake"})
+
 
 @app.on_event("startup")
 async def startup_event():
