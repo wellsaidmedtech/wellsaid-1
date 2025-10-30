@@ -155,6 +155,7 @@ async def handle_incoming_call(request: Request):
         # --- 4. Send Initial Settings to Hume (Override Method) ---
         initial_message = {
             "type": "session_settings",
+            "evi_version": "3", # 
             "prompt": { "text": system_prompt }, # Override the prompt
             "audio": {
                 "encoding": "linear16", # Hume expects 16-bit little-endian PCM
@@ -165,7 +166,6 @@ async def handle_incoming_call(request: Request):
                 "id": "97fe9008-8584-4d56-8453-bd8c7ead3663",
                 "provider": "HUME_AI"
             }
-            # NOTE: We are NOT sending "evi_version" here, as it conflicts with config_id
         }
         await hume_websocket.send(json.dumps(initial_message))
         log.info("--- Sent initial configuration/prompt to Hume EVI (Override method) ---")
