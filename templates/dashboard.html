@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patient Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="bg-gray-100">
+
+    <div class="container mx-auto p-4 md:p-8">
+        <h1 class="text-3xl font-bold text-gray-900 mb-6">Patient Dashboard</h1>
+
+        <!-- Filter Section -->
+        <div class="mb-6 p-6 bg-white rounded-lg shadow">
+            <h2 class="text-xl font-semibold mb-4">Filters</h2>
+            <form action="/" method="GET" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                    <label for="patient_name" class="block text-sm font-medium text-gray-700">Patient Name</label>
+                    <input type="text" name="patient_name" id="patient_name"
+                           value="{{ filters_applied.patient_name or '' }}"
+                           class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                </div>
+                <div>
+                    <label for="clinic_id" class="block text-sm font-medium text-gray-700">Clinic</label>
+                    <select name="clinic_id" id="clinic_id"
+                            class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                        <option value="">All Clinics</option>
+                        {% for clinic in clinics %}
+                        <option value="{{ clinic.clinic_id }}" {% if filters_applied.clinic_id == clinic.clinic_id|string %}selected{% endif %}>
+                            {{ clinic.clinic_name }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="flex items-end space-x-2">
+                    <button type="submit"
+                            class="w-full md:w-auto inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                        Apply Filter
+                    </button>
+                    <a href="/"
+                       class="w-full md:w-auto inline-flex justify-center py-2 px-4 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                        Clear
+                    </a>
+                </div>
+            </form>
+        </div>
+
+        <!-- Demo Phone Override -->
+        <div class="mb-6 p-6 bg-white rounded-lg shadow">
+            <h2 class="text-xl font-semibold mb-4">Demo Settings</h2>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+                <div>
+                    <label for="override_phone" class="block text-sm font-medium text-gray-700">Demo Phone Override</label>
+                    <input type="text" name="override_phone" id="override_phone"
+                           placeholder="e.g., +15558675309"
+                           class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                    <p class="mt-1 text-xs text-gray-500">If filled, all calls will go to this number.</p>
+                </div>
+                <!-- NEW WAKE-UP BUTTON -->
+                <div>
+                    <button id="wake-up-btn" onclick="wakeUpServer()"
+                            class="w-full inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                        Wake Up Server
+                    </button>
+                    <p id="wake-up-status" class="mt-1 text-xs text-gray-500">Click this 30s before a call.</p>
+                </div>
+            </div>
+        </div>
+
+
+        <!-- Patient List -->
+        <div class="bg-white rounded-lg shadow overflow-hidden">
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Patient Name</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">MRN</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Clinic</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Phone</th>
+                            <th scope="col" class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-200">
+                        {% for clinic, patient in patients_list %}
+                        <tr>
+                            <td class="px-6 py-4 whitespace-nowrap">
+                                <div class="text-sm font-medium text-gray-900">{{ patient.name }}</div>
+                                <div class="text-sm text-gray-500">{{ patient.dob }}</div>
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ patient.mrn }}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ clinic.clinic_name }}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ patient.phone }}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-center text-sm font-medium space-x-2">
+                                <!-- This is our next step! -->
+                                <button onclick="callPatient('{{ clinic.clinic_id }}', '{{ patient.mrn }}', '{{ patient.phone }}')"
+                                   class="text-white bg-green-600 hover:bg-green-700 font-medium rounded-md text-sm px-4 py-2">
+                                    Call Patient
+                                </button>
+                                <a href="/patient/{{ clinic.clinic_id }}/{{ patient.mrn }}"
+                                   class="text-blue-600 hover:text-blue-900">
+                                    View Portal
+                                </a>
+                            </td>
+                        </tr>
+                        {% else %}
+                        <tr>
+                            <td colspan="5" class="px-6 py-12 text-center text-sm text-gray-500">
+                                No patients found matching your criteria.
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // This is our new "wake up" function
+        function wakeUpServer() {
+            const btn = document.getElementById('wake-up-btn');
+            const status = document.getElementById('wake-up-status');
+            
+            // This URL is passed in from our Python app
+            const backendUrl = "{{ render_backend_url }}";
+
+            if (!backendUrl) {
+                status.textContent = "Error: RENDER_BACKEND_URL is not set.";
+                status.classList.add('text-red-600');
+                return;
+            }
+
+            // We will add this /wake-up route to our backend in the next step
+            const wakeUpUrl = new URL('/wake-up', backendUrl).href;
+
+            btn.disabled = true;
+            btn.textContent = "Waking up...";
+            status.textContent = "Pinging server...";
+            status.classList.remove('text-red-600', 'text-green-600');
+
+            fetch(wakeUpUrl)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`Server responded with ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.status === 'awake') {
+                        btn.textContent = "Server is Awake!";
+                        status.textContent = "Server is awake and ready for calls.";
+                        status.classList.add('text-green-600');
+                    } else {
+                        throw new Error("Unknown server response.");
+                    }
+                })
+                .catch(error => {
+                    console.error("Wake-up error:", error);
+                    btn.textContent = "Wake Up Server";
+                    status.textContent = `Error: ${error.message}`;
+                    status.classList.add('text-red-600');
+                })
+                .finally(() => {
+                    btn.disabled = false;
+                    // Reset the button after a few seconds
+                    setTimeout(() => {
+                        btn.textContent = "Wake Up Server";
+                    }, 5000);
+                });
+        }
+
+        function callPatient(clinicId, mrn, patientPhone) {
+            const overridePhoneInput = document.getElementById('override_phone');
+            const overridePhone = overridePhoneInput.value;
+
+            // Determine which phone number to use
+            // We pass this to the backend, which will make the *actual* call.
+            // The patient's real phone is the default.
+            let phoneToCall = patientPhone;
+            
+            // If the override field is filled, use that instead.
+            if (overridePhone) {
+                phoneToCall = overridePhone;
+            }
+
+            // Construct the URL and redirect to trigger the call
+            // The backend /call route will handle the rest.
+            let url = `/call/${clinicId}/${mrn}?phone_to_call=${encodeURIComponent(phoneToCall)}`;
+            
+            window.location.href = url;
+        }
+    </script>
+
+</body>
+</html>
+
+

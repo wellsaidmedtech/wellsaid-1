@@ -19,6 +19,7 @@ import firebase_admin # <-- NEW
 from firebase_admin import credentials, firestore 
 from dotenv import load_dotenv
 load_dotenv() # This line actually reads the .env file
+from fastapi.middleware.cors import CORSMiddleware
 
 # Patient Data Import
 try:
@@ -91,6 +92,21 @@ log = logging.getLogger(__name__)
 
 # --- FastAPI App Initialization ---
 app = FastAPI()
+
+# Define the origins that are allowed to make requests
+# In this case, just your local development machine
+origins = [
+    "http://127.0.0.1:8080",
+    "http://localhost:8080",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"], # Allow all methods (GET, POST, etc.)
+    allow_headers=["*"], # Allow all headers
+)
 
 # --- Configuration Loading ---
 # ... (HUME_API_KEY, TWILIO_ACCOUNT_SID, etc. all remain the same) ...

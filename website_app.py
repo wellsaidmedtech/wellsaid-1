@@ -144,9 +144,12 @@ def make_call(clinic_id, mrn):
     # 3. Construct the URL for our *backend* (Render) app
     # This is the URL Twilio will call *after* the patient picks up.
     # We pass the MRN and Clinic ID, which fixes our "MRN: None" error!
+    #
+    # THIS IS THE FIX: We are changing "/twilio/outgoing_call" to
+    # "/twilio/incoming_call" to match the route on call_app.py
     backend_webhook_url = urljoin(
         RENDER_BACKEND_URL, 
-        f"/twilio/outgoing_call?mrn={mrn}&clinic_id={clinic_id}"
+        f"/twilio/incoming_call?mrn={mrn}&clinic_id={clinic_id}"
     )
 
     try:
@@ -171,3 +174,4 @@ def make_call(clinic_id, mrn):
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     app.run(debug=True, host='0.0.0.0', port=port)
+    
