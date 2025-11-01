@@ -358,14 +358,14 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
             await websocket.close()
             return
         
-        logging.info(f"DEBUG: Successfully retrieved connection details for {call.sid}")
+        logging.info(f"DEBUG: Successfully retrieved connection details for {call_sid}")
 
         system_prompt = connection_details.get("system_prompt", "You are a helpful assistant.")
         doc_ref = connection_details.get("doc_ref")
         encounter_date = connection_details.get("encounter_date")
         transcript = []
         
-        logging.info(f"DEBUG: Attempting to connect to Hume EVI for {call.sid}...")
+        logging.info(f"DEBUG: Attempting to connect to Hume EVI for {call_sid}...")
         
         # Use the new ChatConnectOptions
         options = ChatConnectOptions(
