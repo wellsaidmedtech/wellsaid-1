@@ -54,7 +54,7 @@ HUME_CLIENT_SECRET = os.getenv("HUME_CLIENT_SECRET") # Used as the secret_key fo
 if not all([HUME_API_KEY, HUME_CLIENT_SECRET]):
     logging.error("Hume AI credentials missing. Check environment variables.")
 # Initialize the NEW Async client
-hume_client = AsyncHumeClient(HUME_API_KEY)
+hume_client = AsyncHumeClient(api_key=HUME_API_KEY)
 
 # 6. Initialize FastAPI App
 app = FastAPI()
