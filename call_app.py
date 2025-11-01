@@ -1,16 +1,22 @@
 import os
 import asyncio
 import logging
+import json
+import base64
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from twilio.twiml.voice_response import VoiceResponse, Connect
 from twilio.rest import Client
 import firebase_admin
 from firebase_admin import credentials, firestore
-from hume.legacy import HumeStreamClient  # <-- FIX #1
 from dotenv import load_dotenv
-import json
-from hume.legacy.models import LanguageConfig  # <-- FIX #2
+
+# --- NEW HUME IMPORTS ---
+# We are now using the correct AsyncHumeClient for EVI
+from hume.client import AsyncHumeClient
+from hume.empathic_voice.chat import ChatConnectOptions
+from hume.empathic_voice.chat.socket_client import SubscribeEvent
+from hume.api.models.api_error import ApiError
 
 # --- Configuration & Initialization ---
 
@@ -43,9 +49,11 @@ twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
 # 5. Initialize Hume Client
 HUME_API_KEY = os.getenv("HUME_API_KEY")
-HUME_CLIENT_SECRET = os.getenv("HUME_CLIENT_SECRET")
+HUME_CLIENT_SECRET = os.getenv("HUME_CLIENT_SECRET") # Used as the secret_key for EVI
 if not all([HUME_API_KEY, HUME_CLIENT_SECRET]):
     logging.error("Hume AI credentials missing. Check environment variables.")
+# Initialize the NEW Async client
+hume_client = AsyncHumeClient(HUME_API_KEY)
 
 # 6. Initialize FastAPI App
 app = FastAPI()
@@ -67,6 +75,7 @@ app.add_middleware(
 active_connections = {}
 
 # --- Helper Functions ---
+# (These functions are unchanged and correct)
 
 async def get_patient_doc_ref(clinic_id, mrn):
     """Fetches a patient's Firestore document reference."""
@@ -106,11 +115,8 @@ async def fetch_prompts(prompt_ids):
 
 async def generate_system_prompt(base_prompt, patient_data, purpose):
     """Generates a dynamic system prompt based on call purpose and patient data."""
-    
-    # Inject patient name
     system_prompt = base_prompt.replace("[Patient Name]", patient_data.get("name", "the patient"))
     
-    # Fetch and append knowledge base
     kb_doc_id = ""
     if purpose == "medication adherence":
         kb_doc_id = "kb_medication_adherence"
@@ -126,7 +132,6 @@ async def generate_system_prompt(base_prompt, patient_data, purpose):
         except Exception as e:
             logging.error(f"Failed to fetch KB prompt {kb_doc_id}: {e}")
 
-    # Inject specific data
     if purpose == "medication adherence":
         meds = ", ".join(patient_data.get("medications", [])) or "your new medications"
         system_prompt = system_prompt.replace("[Medication List]", meds)
@@ -146,10 +151,7 @@ async def save_call_results_to_firestore(doc_ref, encounter_date, call_sid, tran
         return
         
     try:
-        # Create the path to the specific encounter
         encounter_path = f"encounters.{encounter_date}"
-        
-        # Prepare the update data
         update_data = {
             f"{encounter_path}.status": "completed",
             f"{encounter_path}.call_sid": call_sid,
@@ -162,7 +164,81 @@ async def save_call_results_to_firestore(doc_ref, encounter_date, call_sid, tran
     except Exception as e:
         logging.error(f"Error saving call results for CallSid {call_sid}: {e}")
 
-# --- Core Application Logic ---
+# --- Core Application Logic (Refactored for new Hume EVI) ---
+
+class EviHandler:
+    """
+    This class handles the bi-directional streaming between Twilio and Hume EVI.
+    It's created for each call and manages the callbacks from the Hume WebSocket.
+    """
+    def __init__(self, twilio_ws: WebSocket, hume_socket, call_sid: str, transcript_list: list):
+        self.twilio_ws = twilio_ws
+        self.hume_socket = hume_socket
+        self.call_sid = call_sid
+        self.transcript = transcript_list
+        logging.info(f"EviHandler initialized for {call_sid}")
+
+    async def on_open(self):
+        logging.info(f"Hume EVI WebSocket connected for CallSid: {self.call_sid}")
+
+    async def on_close(self):
+        logging.info(f"Hume EVI WebSocket closed for CallSid: {self.call_sid}")
+
+    async def on_error(self, error: ApiError):
+        logging.error(f"Hume EVI Error for {self.call_sid}: {error.message}")
+        self.transcript.append(f"EVI ERROR: {error.message}")
+
+    async def on_message(self, message: SubscribeEvent):
+        """Handles messages received *from* Hume EVI."""
+        try:
+            if message.type == "user_message" and message.message.content:
+                self.transcript.append(f"Patient: {message.message.content}")
+            elif message.type == "assistant_message" and message.message.content:
+                self.transcript.append(f"Assistant: {message.message.content}")
+            
+            elif message.type == "audio_output":
+                # This is audio from Hume. Decode it and send it to Twilio.
+                audio_b64 = message.data
+                
+                # Format for Twilio Media Stream
+                response_json = {
+                    "event": "media",
+                    "streamSid": self.call_sid, 
+                    "media": {
+                        "payload": audio_b64
+                    }
+                }
+                await self.twilio_ws.send_text(json.dumps(response_json))
+            
+            elif message.type == "error":
+                logging.error(f"Hume EVI Message Error for {self.call_sid}: {message.message}")
+                self.transcript.append(f"EVI Error: {message.message}")
+
+        except Exception as e:
+            logging.error(f"Error in on_message for {self.call_sid}: {e}", exc_info=True)
+
+    async def handle_twilio_audio(self):
+        """Task to forward audio *from* Twilio *to* Hume."""
+        try:
+            while True:
+                message_str = await self.twilio_ws.receive_text()
+                message_json = json.loads(message_str)
+                
+                if message_json['event'] == 'media':
+                    # This is audio from Twilio. Send it to Hume.
+                    payload_b64 = message_json['media']['payload']
+                    audio_bytes = base64.b64decode(payload_b64)
+                    await self.hume_socket.send_bytes(audio_bytes)
+                elif message_json['event'] == 'stop':
+                    logging.info(f"Received 'stop' message from Twilio for {self.call_sid}")
+                    await self.hume_socket.close() # This will trigger on_close
+                    break
+        except WebSocketDisconnect:
+            logging.info(f"Twilio WebSocket disconnected (media stream) for {self.call_sid}")
+        except Exception as e:
+            logging.error(f"Error in Twilio audio stream for {self.call_sid}: {e}", exc_info=True)
+            await self.hume_socket.close() # Ensure Hume socket closes on error
+
 
 @app.websocket("/twilio/media/{call_sid}")
 async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
@@ -182,61 +258,35 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
     transcript = []
     
     try:
-        async with HumeStreamClient(HUME_API_KEY, HUME_CLIENT_SECRET) as client:
-            config = LanguageConfig(system_prompt=system_prompt)
-            async with client.connect([config]) as socket:
-                logging.info(f"Hume EVI WebSocket connected for CallSid: {call_sid}")
-
-                async def handle_audio_stream(ws):
-                    """Task to forward audio from Twilio to Hume."""
-                    try:
-                        while True:
-                            message_str = await ws.receive_text()
-                            message_json = json.loads(message_str)
-                            
-                            if message_json['event'] == 'media':
-                                payload_b64 = message_json['media']['payload']
-                                await socket.send_bytes(payload_b64)
-                            elif message_json['event'] == 'stop':
-                                logging.info(f"Received 'stop' message from Twilio for {call_sid}")
-                                await socket.close()
-                                break
-                    except WebSocketDisconnect:
-                        logging.info(f"Twilio WebSocket disconnected (media stream) for {call_sid}")
-                    except Exception as e:
-                        logging.error(f"Error in Twilio audio stream for {call_sid}: {e}")
-
-                async def handle_evi_stream(ws):
-                    """Task to forward audio from Hume to Twilio."""
-                    try:
-                        async for message in socket:
-                            msg_type = message["type"]
-                            if msg_type == "user_message" and message.get("message"):
-                                transcript.append(f"Patient: {message['message']['content']}")
-                            elif msg_type == "assistant_message" and message.get("message"):
-                                transcript.append(f"Assistant: {message['message']['content']}")
-                            
-                            if msg_type == "audio_output":
-                                audio_b64 = message["data"]
-                                # Format for Twilio Media Stream
-                                response_json = {
-                                    "event": "media",
-                                    "streamSid": call_sid, 
-                                    "media": {
-                                        "payload": audio_b64
-                                    }
-                                }
-                                await ws.send_text(json.dumps(response_json))
-                    except WebSocketDisconnect:
-                        logging.info(f"Hume EVI WebSocket disconnected for {call_sid}")
-                    except Exception as e:
-                        logging.error(f"Error in Hume EVI stream for {call_sid}: {e}")
-
-                # Run both tasks concurrently
-                await asyncio.gather(handle_audio_stream(websocket), handle_evi_stream(websocket))
+        # Use the new ChatConnectOptions
+        options = ChatConnectOptions(
+            system_prompt=system_prompt,
+            secret_key=HUME_CLIENT_SECRET # Use the secret for auth
+        )
+        
+        # Use the new connect_with_callbacks method
+        async with hume_client.empathic_voice.chat.connect_with_callbacks(
+            options=options,
+            on_open=None,    # We will assign these via the handler
+            on_message=None,
+            on_close=None,
+            on_error=None
+        ) as socket:
+            
+            # Create the handler class to manage the connection state
+            handler = EviHandler(websocket, socket, call_sid, transcript)
+            
+            # Assign the callback methods from our handler
+            socket.on_open = handler.on_open
+            socket.on_message = handler.on_message
+            socket.on_close = handler.on_close
+            socket.on_error = handler.on_error
+            
+            # This task listens to Twilio and forwards audio to Hume
+            await handler.handle_twilio_audio()
 
     except Exception as e:
-        logging.error(f"WebSocket handling failed for {call_sid}: {e}")
+        logging.error(f"WebSocket handling failed for {call_sid}: {e}", exc_info=True)
     finally:
         logging.info(f"Cleaning up WebSocket for {call_sid}")
         # Save results to Firestore
@@ -264,11 +314,9 @@ async def handle_incoming_call(request: Request):
     logging.info("Twilio call webhook received.")
     
     try:
-        # Parse data from Twilio (from /call route or incoming)
         form_data = await request.form()
         call_sid = form_data.get("CallSid")
         
-        # Data passed from our /call endpoint
         mrn = request.query_params.get("mrn")
         clinic_id = request.query_params.get("clinic_id")
 
@@ -282,7 +330,6 @@ async def handle_incoming_call(request: Request):
 
         logging.info(f"Processing call for Clinic: {clinic_id}, MRN: {mrn}, CallSid: {call_sid}")
 
-        # 1. Fetch patient data and doc ref
         doc_ref = await get_patient_doc_ref(clinic_id, mrn)
         if not doc_ref:
             logging.error(f"Could not find patient doc ref for MRN {mrn}. CallSid: {call_sid}")
@@ -290,17 +337,15 @@ async def handle_incoming_call(request: Request):
         
         patient_data = (await doc_ref.get()).to_dict()
 
-        # 2. Find the scheduled AI call to get its purpose
         scheduled_call = None
         encounter_date = None
         if "encounters" in patient_data:
-            # Sort encounters by date, newest first, to find the most recent scheduled call
             sorted_encounters = sorted(patient_data["encounters"].items(), key=lambda item: item[0], reverse=True)
             for date, encounter in sorted_encounters:
                 if encounter.get("status") == "scheduled" and "AI" in encounter.get("type", ""):
                     scheduled_call = encounter
                     encounter_date = date
-                    break # Found the most recent scheduled AI call
+                    break 
 
         if not scheduled_call:
             logging.error(f"No scheduled AI call found for MRN {mrn}. CallSid: {call_sid}")
@@ -309,20 +354,17 @@ async def handle_incoming_call(request: Request):
         call_purpose = scheduled_call.get("purpose", "a routine check-in")
         logging.info(f"Found scheduled call with purpose: {call_purpose}")
 
-        # 3. Generate the dynamic system prompt
         base_prompts_data = await fetch_prompts(['prompt_identity', 'prompt_rules'])
         base_prompt = f"{base_prompts_data.get('prompt_identity', '')}\n\n{base_prompts_data.get('prompt_rules', '')}"
         
         system_prompt = await generate_system_prompt(base_prompt, patient_data, call_purpose)
 
-        # 4. Store connection details for the WebSocket
         active_connections[call_sid] = {
             "system_prompt": system_prompt,
             "doc_ref": doc_ref,
             "encounter_date": encounter_date
         }
 
-        # 5. Respond to Twilio with TwiML
         response = VoiceResponse()
         connect = Connect()
         connect.stream(url=f"wss://{request.url.hostname}/twilio/media/{call_sid}")

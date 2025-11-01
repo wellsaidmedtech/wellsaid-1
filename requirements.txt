@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
 hume[legacy]
+hume[microphone]
 google-cloud-firestore
 firebase-admin
 python-dotenv
