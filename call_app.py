@@ -7,15 +7,14 @@ from twilio.twiml.voice_response import VoiceResponse, Connect
 from twilio.rest import Client
 import firebase_admin
 from firebase_admin import credentials, firestore
-from hume import HumeStreamClient
-from hume.models import LanguageConfig # <-- THIS IS THE FIX
+from hume.legacy import HumeStreamClient  # <-- FIX #1
 from dotenv import load_dotenv
 import json
+from hume.legacy.models import LanguageConfig  # <-- FIX #2
 
 # --- Configuration & Initialization ---
 
 # 1. Load Environment Variables
-# This loads from your .env file locally, or from Render's environment variables
 load_dotenv()
 
 # 2. Configure Logging
@@ -26,7 +25,6 @@ logging.basicConfig(
 )
 
 # 3. Initialize Firebase
-# This uses the official environment variable that Render is now providing
 try:
     firebase_admin.initialize_app()
     db = firestore.client()
@@ -53,7 +51,6 @@ if not all([HUME_API_KEY, HUME_CLIENT_SECRET]):
 app = FastAPI()
 
 # 7. Add CORS Middleware
-# This allows your local web app (http://127.0.0.1:8080) to talk to your Render app.
 origins = [
     "http://localhost:8080",
     "http://127.0.0.1:8080",
@@ -78,7 +75,8 @@ async def get_patient_doc_ref(clinic_id, mrn):
         return None
     try:
         doc_ref = db.collection(f"clinics/{clinic_id}/patients").document(mrn)
-        if not doc_ref.get().exists:
+        doc = await doc_ref.get()
+        if not doc.exists:
             logging.warning(f"Patient doc not found for clinic {clinic_id}, MRN {mrn}")
             return None
         return doc_ref
@@ -186,7 +184,7 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
     try:
         async with HumeStreamClient(HUME_API_KEY, HUME_CLIENT_SECRET) as client:
             config = LanguageConfig(system_prompt=system_prompt)
-            async with client.connect_with_handlers(config=config) as socket:
+            async with client.connect([config]) as socket:
                 logging.info(f"Hume EVI WebSocket connected for CallSid: {call_sid}")
 
                 async def handle_audio_stream(ws):
@@ -212,13 +210,14 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
                     """Task to forward audio from Hume to Twilio."""
                     try:
                         async for message in socket:
-                            if message.type == "user_message" and message.message.content:
-                                transcript.append(f"Patient: {message.message.content}")
-                            elif message.type == "assistant_message" and message.message.content:
-                                transcript.append(f"Assistant: {message.message.content}")
+                            msg_type = message["type"]
+                            if msg_type == "user_message" and message.get("message"):
+                                transcript.append(f"Patient: {message['message']['content']}")
+                            elif msg_type == "assistant_message" and message.get("message"):
+                                transcript.append(f"Assistant: {message['message']['content']}")
                             
-                            if message.type == "audio_output":
-                                audio_b64 = message.data
+                            if msg_type == "audio_output":
+                                audio_b64 = message["data"]
                                 # Format for Twilio Media Stream
                                 response_json = {
                                     "event": "media",
@@ -295,11 +294,13 @@ async def handle_incoming_call(request: Request):
         scheduled_call = None
         encounter_date = None
         if "encounters" in patient_data:
-            for date, encounter in patient_data["encounters"].items():
+            # Sort encounters by date, newest first, to find the most recent scheduled call
+            sorted_encounters = sorted(patient_data["encounters"].items(), key=lambda item: item[0], reverse=True)
+            for date, encounter in sorted_encounters:
                 if encounter.get("status") == "scheduled" and "AI" in encounter.get("type", ""):
                     scheduled_call = encounter
                     encounter_date = date
-                    break # Found the first scheduled AI call
+                    break # Found the most recent scheduled AI call
 
         if not scheduled_call:
             logging.error(f"No scheduled AI call found for MRN {mrn}. CallSid: {call_sid}")
@@ -340,3 +341,4 @@ def wake_up():
     """Simple GET route to wake up the Render service."""
     logging.info("'/wake-up' endpoint was pinged.")
     return {"status": "awake"}
+

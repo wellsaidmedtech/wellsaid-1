@@ -1,6 +1,6 @@
 fastapi
 uvicorn[standard]
-hume>=0.11.0
+hume.legacy
 google-cloud-firestore
 firebase-admin
 python-dotenv
