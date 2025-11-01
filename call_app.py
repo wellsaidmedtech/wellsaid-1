@@ -3,6 +3,7 @@ import asyncio
 import logging
 import json
 import base64
+import redis  # Import the redis library
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from twilio.twiml.voice_response import VoiceResponse, Connect
@@ -52,10 +53,27 @@ if not all([HUME_API_KEY, HUME_SECRET_KEY]):
     logging.error("Hume AI credentials missing. Check environment variables.")
 hume_client = AsyncHumeClient(api_key=HUME_API_KEY)
 
-# 6. Initialize FastAPI App
+# 6. Initialize Redis Client
+REDIS_URL = os.getenv("REDIS_URL")
+if not REDIS_URL:
+    logging.error("REDIS_URL not found. App will fail in multi-worker environment.")
+    # Fallback for local testing, but not production-safe
+    active_connections_local = {} 
+    redis_client = None
+else:
+    try:
+        redis_client = redis.from_url(REDIS_URL, decode_responses=True) # decode_responses=True is crucial
+        redis_client.ping()
+        logging.info("Successfully connected to Redis.")
+    except Exception as e:
+        logging.error(f"Could not connect to Redis: {e}. App will fail in multi-worker environment.")
+        redis_client = None
+        active_connections_local = {} # Fallback
+
+# 7. Initialize FastAPI App
 app = FastAPI()
 
-# 7. Add CORS Middleware
+# 8. Add CORS Middleware
 origins = [
     "http://localhost:8080",
     "http://127.0.0.1:8080",
@@ -68,10 +86,56 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global dictionary to keep track of active connections
-active_connections = {}
 
-# --- Helper Functions (FIXED: Changed from async to sync) ---
+# --- Redis/Local Connection Management ---
+
+def set_connection_details(call_sid, details):
+    """Saves connection details to Redis (or local dict) with an expiration."""
+    # Serialize the doc_ref for storage
+    details_serializable = {
+        "system_prompt": details.get("system_prompt"),
+        "doc_ref_path": details.get("doc_ref").path, # Store path, not object
+        "encounter_date": details.get("encounter_date")
+    }
+    details_json = json.dumps(details_serializable)
+    
+    if redis_client:
+        # Set to expire in 1 hour (3600 seconds)
+        redis_client.setex(call_sid, 3600, details_json)
+    else:
+        active_connections_local[call_sid] = details_json # No expiration in local fallback
+
+def get_connection_details(call_sid):
+    """Retrieves connection details from Redis (or local dict)."""
+    details_json = None
+    if redis_client:
+        details_json = redis_client.get(call_sid)
+    else:
+        details_json = active_connections_local.get(call_sid)
+        
+    if not details_json:
+        return None
+        
+    # Deserialize and re-hydrate the doc_ref
+    details_serializable = json.loads(details_json)
+    doc_ref = db.document(details_serializable["doc_ref_path"]) # Recreate doc_ref from path
+    
+    return {
+        "system_prompt": details_serializable.get("system_prompt"),
+        "doc_ref": doc_ref,
+        "encounter_date": details_serializable.get("encounter_date")
+    }
+
+def del_connection_details(call_sid):
+    """Deletes connection details from Redis (or local dict)."""
+    if redis_client:
+        redis_client.delete(call_sid)
+    else:
+        if call_sid in active_connections_local:
+            del active_connections_local[call_sid]
+
+
+# --- Helper Functions (Sync) ---
 
 def get_patient_doc_ref(clinic_id, mrn):
     """Fetches a patient's Firestore document reference. (SYNC)"""
@@ -80,7 +144,6 @@ def get_patient_doc_ref(clinic_id, mrn):
         return None
     try:
         doc_ref = db.collection(f"clinics/{clinic_id}/patients").document(mrn)
-        # --- FIX: Removed 'await' ---
         doc = doc_ref.get()
         if not doc.exists:
             logging.warning(f"Patient doc not found for clinic {clinic_id}, MRN {mrn}")
@@ -100,7 +163,6 @@ def fetch_prompts(prompt_ids):
     try:
         for doc_id in prompt_ids:
             doc_ref = db.collection("prompt_library").document(doc_id)
-            # --- FIX: Removed 'await' ---
             doc = doc_ref.get()
             if doc.exists:
                 prompt_data[doc_id] = doc.to_dict().get("content", "")
@@ -116,14 +178,13 @@ def generate_system_prompt(base_prompt, patient_data, purpose):
     system_prompt = base_prompt.replace("[Patient Name]", patient_data.get("name", "the patient"))
     
     kb_doc_id = ""
-    if purpose == "medication adherence":
+    if purpose == "medication adherence" or purpose == "medication follow-up":
         kb_doc_id = "kb_medication_adherence"
     elif purpose == "post-op checkin":
         kb_doc_id = "kb_post_op_checkin"
     
     if kb_doc_id:
         try:
-            # --- FIX: Removed 'await' ---
             kb_prompts = fetch_prompts([kb_doc_id])
             kb_content = kb_prompts.get(kb_doc_id)
             if kb_content:
@@ -131,7 +192,7 @@ def generate_system_prompt(base_prompt, patient_data, purpose):
         except Exception as e:
             logging.error(f"Failed to fetch KB prompt {kb_doc_id}: {e}")
 
-    if purpose == "medication adherence":
+    if purpose == "medication adherence" or purpose == "medication follow-up":
         meds = ", ".join(patient_data.get("medications", [])) or "your new medications"
         system_prompt = system_prompt.replace("[Medication List]", meds)
     
@@ -157,7 +218,6 @@ def save_call_results_to_firestore(doc_ref, encounter_date, call_sid, transcript
             f"{encounter_path}.call_transcript": "\n".join(transcript)
         }
         
-        # --- FIX: Removed 'await' ---
         doc_ref.update(update_data)
         logging.info(f"Successfully saved call results for CallSid {call_sid} to encounter {encounter_date}")
         
@@ -246,12 +306,12 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
     await websocket.accept()
     logging.info(f"WebSocket connection established for CallSid: {call_sid}")
     
-    if call_sid not in active_connections:
+    connection_details = get_connection_details(call_sid)
+    if not connection_details:
         logging.error(f"No active connection details found for CallSid {call_sid}. Closing WebSocket.")
         await websocket.close()
         return
 
-    connection_details = active_connections[call_sid]
     system_prompt = connection_details.get("system_prompt", "You are a helpful assistant.")
     doc_ref = connection_details.get("doc_ref")
     encounter_date = connection_details.get("encounter_date")
@@ -291,7 +351,6 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
         logging.info(f"Cleaning up WebSocket for {call_sid}")
         # Save results to Firestore
         if doc_ref and encounter_date and transcript:
-            # --- FIX: Removed 'await' ---
             save_call_results_to_firestore(doc_ref, encounter_date, call_sid, transcript)
         
         # Mark the call as complete with Twilio (if not already done)
@@ -304,9 +363,8 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
             logging.error(f"Could not update Twilio call {call_sid} status: {e}")
             
         # Clean up global connection tracking
-        if call_sid in active_connections:
-            del active_connections[call_sid]
-            logging.info(f"Removed {call_sid} from active_connections.")
+        del_connection_details(call_sid)
+        logging.info(f"Removed {call_sid} from active_connections.")
 
 
 @app.post("/twilio/incoming_call")
@@ -331,13 +389,11 @@ async def handle_incoming_call(request: Request):
 
         logging.info(f"Processing call for Clinic: {clinic_id}, MRN: {mrn}, CallSid: {call_sid}")
 
-        # --- FIX: Removed 'await' ---
         doc_ref = get_patient_doc_ref(clinic_id, mrn)
         if not doc_ref:
             logging.error(f"Could not find patient doc ref for MRN {mrn}. CallSid: {call_sid}")
             return VoiceResponse().say("An application error occurred. Could not find patient records.")
         
-        # --- FIX: Removed 'await' ---
         patient_data = doc_ref.get().to_dict()
 
         scheduled_call = None
@@ -357,18 +413,17 @@ async def handle_incoming_call(request: Request):
         call_purpose = scheduled_call.get("purpose", "a routine check-in")
         logging.info(f"Found scheduled call with purpose: {call_purpose}")
 
-        # --- FIX: Removed 'await' ---
         base_prompts_data = fetch_prompts(['prompt_identity', 'prompt_rules'])
         base_prompt = f"{base_prompts_data.get('prompt_identity', '')}\n\n{base_prompts_data.get('prompt_rules', '')}"
         
-        # --- FIX: Removed 'await' ---
         system_prompt = generate_system_prompt(base_prompt, patient_data, call_purpose)
 
-        active_connections[call_sid] = {
+        # Store connection details in Redis (or local dict)
+        set_connection_details(call_sid, {
             "system_prompt": system_prompt,
             "doc_ref": doc_ref,
             "encounter_date": encounter_date
-        }
+        })
 
         response = VoiceResponse()
         connect = Connect()
