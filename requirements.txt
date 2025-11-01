@@ -11,3 +11,4 @@ websocket-client
 uvloop
 httptools
 python-multipart
+redis
