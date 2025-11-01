@@ -50,7 +50,6 @@ twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
 # 5. Initialize Hume Client
 HUME_API_KEY = os.getenv("HUME_API_KEY")
-# --- FIX: Use HUME_SECRET_KEY as per user's finding ---
 HUME_SECRET_KEY = os.getenv("HUME_SECRET_KEY") # Used as the secret_key for EVI
 if not all([HUME_API_KEY, HUME_SECRET_KEY]):
     logging.error("Hume AI credentials missing. Check environment variables.")
@@ -289,6 +288,7 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
             await handler.handle_twilio_audio()
 
     except Exception as e:
+        # --- FIX 2: Corrected `call_dimsid` to `call_sid` ---
         logging.error(f"WebSocket handling failed for {call_sid}: {e}", exc_info=True)
     finally:
         logging.info(f"Cleaning up WebSocket for {call_sid}")
@@ -318,7 +318,8 @@ async def handle_incoming_call(request: Request):
     
     try:
         form_data = await request.form()
-        call_sid = form__data.get("CallSid")
+        # --- FIX 1: Corrected `form__data` to `form_data` ---
+        call_sid = form_data.get("CallSid")
         
         mrn = request.query_params.get("mrn")
         clinic_id = request.query_params.get("clinic_id")
