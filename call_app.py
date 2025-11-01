@@ -210,7 +210,7 @@ def generate_system_prompt(base_prompt, patient_data, purpose):
         except Exception as e:
             logging.error(f"Failed to fetch KB prompt {kb_doc_id}: {e}")
 
-    if purpose == "medication adherence" or purpose == "medFication follow-up":
+    if purpose == "medication adherence" or purpose == "medication follow-up":
         meds = ", ".join(patient_data.get("medications", [])) or "your new medications"
         system_prompt = system_prompt.replace("[Medication List]", meds)
     
@@ -438,7 +438,8 @@ async def handle_incoming_call(request: Request):
         system_prompt = generate_system_prompt(base_prompt, patient_data, call_purpose)
 
         # Store connection details in Redis (or local dict)
-        set_connection_details(call_sill, {
+        # --- FIX: Corrected typo 'call_sill' to 'call_sid' ---
+        set_connection_details(call_sid, {
             "system_prompt": system_prompt,
             "doc_ref": doc_ref,
             "encounter_date": encounter_date
