@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 from hume.client import AsyncHumeClient
 # This is the fix for ChatConnectOptions:
 from hume.empathic_voice.chat.socket_client import ChatConnectOptions, SubscribeEvent
-# This is the fix for ApiError, as you discovered:
+# This is the fix for ApiError:
 from hume.core.api_error import ApiError
 
 # --- Configuration & Initialization ---
@@ -50,10 +50,12 @@ twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
 # 5. Initialize Hume Client
 HUME_API_KEY = os.getenv("HUME_API_KEY")
-HUME_CLIENT_SECRET = os.getenv("HUME_CLIENT_SECRET") # Used as the secret_key for EVI
-if not all([HUME_API_KEY, HUME_CLIENT_SECRET]):
+# --- FIX: Use HUME_SECRET_KEY as per user's finding ---
+HUME_SECRET_KEY = os.getenv("HUME_SECRET_KEY") # Used as the secret_key for EVI
+if not all([HUME_API_KEY, HUME_SECRET_KEY]):
     logging.error("Hume AI credentials missing. Check environment variables.")
-# Initialize the NEW Async client
+    
+# Initialize the NEW Async client (FIXED: using keyword argument)
 hume_client = AsyncHumeClient(api_key=HUME_API_KEY)
 
 # 6. Initialize FastAPI App
@@ -241,7 +243,7 @@ class EviHandler:
             await self.hume_socket.close() # Ensure Hume socket closes on error
 
 
-@app.websocket("/twilio/media/{call_sillid}")
+@app.websocket("/twilio/media/{call_sid}")
 async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
     """Handles the bidirectional audio stream from Twilio."""
     await websocket.accept()
@@ -262,7 +264,7 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
         # Use the new ChatConnectOptions
         options = ChatConnectOptions(
             system_prompt=system_prompt,
-            secret_key=HUME_CLIENT_SECRET # Use the secret for auth
+            secret_key=HUME_SECRET_KEY # Use the secret for auth
         )
         
         # Use the new connect_with_callbacks method
@@ -316,7 +318,7 @@ async def handle_incoming_call(request: Request):
     
     try:
         form_data = await request.form()
-        call_sid = form_data.get("CallSid")
+        call_sid = form__data.get("CallSid")
         
         mrn = request.query_params.get("mrn")
         clinic_id = request.query_params.get("clinic_id")
