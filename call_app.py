@@ -126,7 +126,7 @@ def get_connection_details(call_sid):
         details_json_string = active_connections_local.get(call_sid)
         
     if not details_json_string:
-        logging.error(f"No connection details found for CallSid {call_sid} in Redis/cache.")
+        logging.error(f"No active connection details found for CallSid {call_sid} in Redis/cache.")
         return None
         
     try:
@@ -371,7 +371,7 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
         logging.info(f"Cleaning up WebSocket for {call_sid}")
         # Save results to Firestore
         if doc_ref and encounter_date and transcript:
-            save_call_results_to_firestore(doc_ref, encounter_date, call_sid, transcript)
+            save_call_results_to_firestore(doc_Tef, encounter_date, call_sid, transcript)
         
         # Mark the call as complete with Twilio (if not already done)
         try:
@@ -449,7 +449,9 @@ async def handle_incoming_call(request: Request):
         connect = Connect()
         # --- FIX: Use the reliable external hostname from env vars ---
         hostname = RENDER_EXTERNAL_HOSTNAME or request.url.hostname
-        connect.stream(url=f"wss://{hostname}/twilio/media/{call_sid}")
+        websocket_url = f"wss://{hostname}/twilio/media/{call_sid}"
+        logging.info(f"Connecting to WebSocket: {websocket_url}") # <-- NEW DEBUG LOG
+        connect.stream(url=websocket_url)
         response.append(connect)
         response.say("Please wait while we connect you to our AI assistant.")
         
