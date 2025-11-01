@@ -4,7 +4,7 @@ import logging
 import json
 import base64
 import redis  # Import the redis library
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Response # <-- IMPORT Response
 from fastapi.middleware.cors import CORSMiddleware
 from twilio.twiml.voice_response import VoiceResponse, Connect
 from twilio.rest import Client
@@ -126,7 +126,6 @@ def get_connection_details(call_sid):
         details_json_string = active_connections_local.get(call_sid)
         
     if not details_json_string:
-        # NOTE: This log line is critical
         logging.error(f"No connection details found for CallSid {call_sid} in Redis/cache.")
         return None
         
@@ -383,7 +382,6 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
         # Save results to Firestore
         if 'doc_ref' in locals() and 'encounter_date' in locals() and 'transcript' in locals():
             if doc_ref and encounter_date and transcript:
-                # --- FIX: Corrected typo 'doc_Tef' to 'doc_ref' ---
                 save_call_results_to_firestore(doc_ref, encounter_date, call_sid, transcript)
         
         # Mark the call as complete with Twilio (if not already done)
@@ -404,6 +402,7 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
 async def handle_incoming_call(request: Request):
     """Main webhook to handle incoming Twilio calls."""
     logging.info("Twilio call webhook received.")
+    response = VoiceResponse() # Create a base response
     
     try:
         form_data = await request.form()
@@ -414,18 +413,21 @@ async def handle_incoming_call(request: Request):
 
         if not call_sid:
             logging.error("Request is missing CallSid.")
-            return VoiceResponse().say("An application error occurred. Missing call identifier.")
+            response.say("An application error occurred. Missing call identifier.")
+            return Response(content=response.to_xml(), media_type="text/xml")
         
         if not mrn or not clinic_id:
             logging.error(f"Missing MRN or Clinic ID in webhook URL. CallSid: {call_sid}, MRN: {mrn}")
-            return VoiceResponse().say("An application error occurred. Could not retrieve patient records.")
+            response.say("An application error occurred. Could not retrieve patient records.")
+            return Response(content=response.to_xml(), media_type="text/xml")
 
         logging.info(f"Processing call for Clinic: {clinic_id}, MRN: {mrn}, CallSid: {call_sid}")
 
         doc_ref = get_patient_doc_ref(clinic_id, mrn)
         if not doc_ref:
             logging.error(f"Could not find patient doc ref for MRN {mrn}. CallSid: {call_sid}")
-            return VoiceResponse().say("An application error occurred. Could not find patient records.")
+            response.say("An application error occurred. Could not find patient records.")
+            return Response(content=response.to_xml(), media_type="text/xml")
         
         patient_data = doc_ref.get().to_dict()
 
@@ -441,7 +443,8 @@ async def handle_incoming_call(request: Request):
 
         if not scheduled_call:
             logging.error(f"No scheduled AI call found for MRN {mrn}. CallSid: {call_sid}")
-            return VoiceResponse().say("Thank you for calling. No scheduled AI interactions found for your account. Goodbye.")
+            response.say("Thank you for calling. No scheduled AI interactions found for your account. Goodbye.")
+            return Response(content=response.to_xml(), media_type="text/xml")
 
         call_purpose = scheduled_call.get("purpose", "a routine check-in")
         logging.info(f"Found scheduled call with purpose: {call_purpose}")
@@ -458,22 +461,23 @@ async def handle_incoming_call(request: Request):
             "encounter_date": encounter_date
         })
 
-        response = VoiceResponse()
+        # --- THIS IS THE "SUCCESS" PATH ---
         connect = Connect()
-        # --- FIX: Use the reliable external hostname from env vars ---
         hostname = RENDER_EXTERNAL_HOSTNAME or request.url.hostname
         websocket_url = f"wss://{hostname}/twilio/media/{call_sid}"
-        logging.info(f"Connecting to WebSocket: {websocket_url}") # <-- NEW DEBUG LOG
+        logging.info(f"Connecting to WebSocket: {websocket_url}") 
         connect.stream(url=websocket_url)
         response.append(connect)
         response.say("Please wait while we connect you to our AI assistant.")
         
         logging.info(f"Returning TwiML to Twilio for CallSid: {call_sid}")
-        return response.to_xml(), {"Content-Type": "text/xml"}
+        return Response(content=response.to_xml(), media_type="text/xml")
 
     except Exception as e:
         logging.error(f"Unexpected error in handle_incoming_call: {e}", exc_info=True)
-        return VoiceResponse().say("An application error occurred. Please try again later.")
+        response = VoiceResponse() # Create a fresh response for the error
+        response.say("An application error occurred. Please try again later.")
+        return Response(content=response.to_xml(), media_type="text/xml")
 
 @app.get("/wake-up")
 def wake_up():
