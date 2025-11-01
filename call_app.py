@@ -4,7 +4,8 @@ import logging
 import json
 import base64
 import redis  # Import the redis library
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Response # <-- IMPORT Response
+import audioop # Import for audio conversion
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Response
 from fastapi.middleware.cors import CORSMiddleware
 from twilio.twiml.voice_response import VoiceResponse, Connect
 from twilio.rest import Client
@@ -290,6 +291,16 @@ class EviHandler:
                 }
                 await self.twilio_ws.send_text(json.dumps(response_json))
             
+            # --- NEW: Handle interruptions as per user's research ---
+            elif message.type == "user_interruption":
+                logging.info(f"Hume detected user interruption for {self.call_sid}. Clearing Twilio audio queue.")
+                # Send a "clear" message to Twilio to stop any queued audio
+                clear_message = {
+                    "event": "clear",
+                    "streamSid": self.call_sid
+                }
+                await self.twilio_ws.send_text(json.dumps(clear_message))
+
             elif message.type == "error":
                 logging.error(f"Hume EVI Message Error for {self.call_sid}: {message.message}")
                 self.transcript.append(f"EVI Error: {message.message}")
@@ -305,22 +316,29 @@ class EviHandler:
                 message_json = json.loads(message_str)
                 
                 if message_json['event'] == 'media':
-                    # This is audio from Twilio. Send it to Hume.
+                    # 1. Get base64 mu-law audio from Twilio
                     payload_b64 = message_json['media']['payload']
-                    audio_bytes = base64.b64decode(payload_b64)
                     
-                    # --- FIX: Changed 'send_bytes' to 'send_audio_bytes' ---
-                    await self.hume_socket.send_audio_bytes(audio_bytes)
+                    # 2. Decode it into raw mu-law bytes
+                    mulaw_bytes = base64.b64decode(payload_b64)
+                    
+                    # 3. Convert mu-law bytes to PCM-16 (linear) bytes. 
+                    # '2' is the width (2 bytes for 16-bit)
+                    pcm_bytes = audioop.ulaw2lin(mulaw_bytes, 2)
+                    
+                    # 4. Re-encode the new PCM-16 bytes into base64
+                    pcm_b64 = base64.b64encode(pcm_bytes).decode('utf-8')
+                    
+                    # 5. --- FIX: Use the correct 'send_audio_input' method ---
+                    await self.hume_socket.send_audio_input(pcm_b64)
                     
                 elif message_json['event'] == 'stop':
                     logging.info(f"Received 'stop' message from Twilio for {self.call_sid}")
-                    # --- FIX: Removed manual '.close()'. The 'async with' block handles this. ---
                     break
         except WebSocketDisconnect:
             logging.info(f"Twilio WebSocket disconnected (media stream) for {self.call_sid}")
         except Exception as e:
             logging.error(f"Error in Twilio audio stream for {self.call_sid}: {e}", exc_info=True)
-            # --- FIX: Removed manual '.close()'. The 'async with' block handles this. ---
 
 
 @app.websocket("/twilio/media/{call_sid}")
@@ -340,14 +358,14 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
             await websocket.close()
             return
         
-        logging.info(f"DEBUG: Successfully retrieved connection details for {call_sid}")
+        logging.info(f"DEBUG: Successfully retrieved connection details for {call.sid}")
 
         system_prompt = connection_details.get("system_prompt", "You are a helpful assistant.")
         doc_ref = connection_details.get("doc_ref")
         encounter_date = connection_details.get("encounter_date")
         transcript = []
         
-        logging.info(f"DEBUG: Attempting to connect to Hume EVI for {call_sid}...")
+        logging.info(f"DEBUG: Attempting to connect to Hume EVI for {call.sid}...")
         
         # Use the new ChatConnectOptions
         options = ChatConnectOptions(
@@ -492,6 +510,5 @@ def root():
 @app.get("/wake-up")
 def wake_up():
     """Simple GET route to wake up the Render service."""
-    logging.info("'/wake-up' endpoint was pinged.")
     return {"status": "awake"}
 
