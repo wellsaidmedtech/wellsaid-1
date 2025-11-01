@@ -126,7 +126,8 @@ def get_connection_details(call_sid):
         details_json_string = active_connections_local.get(call_sid)
         
     if not details_json_string:
-        logging.error(f"No active connection details found for CallSid {call_sid} in Redis/cache.")
+        # NOTE: This log line is critical
+        logging.error(f"No connection details found for CallSid {call_sid} in Redis/cache.")
         return None
         
     try:
@@ -322,15 +323,23 @@ class EviHandler:
 @app.websocket("/twilio/media/{call_sid}")
 async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
     """Handles the bidirectional audio stream from Twilio."""
+    # --- NEW LOGGING ---
+    logging.info(f"WebSocket route hit for {call_sid}")
     await websocket.accept()
-    logging.info(f"WebSocket connection established for CallSid: {call_sid}")
+    logging.info(f"WebSocket connection accepted for {call_sid}")
     
+    # --- NEW LOGGING ---
+    logging.info(f"Attempting to get connection details for {call_sid} from Redis...")
     connection_details = get_connection_details(call_sid)
+    
     if not connection_details:
-        # NOTE: This is the error we've been hitting.
+        # This log line was already here, but now we'll know if we got this far
         logging.error(f"No active connection details found for CallSid {call_sid}. Closing WebSocket.")
         await websocket.close()
         return
+    
+    # --- NEW LOGGING ---
+    logging.info(f"Successfully retrieved connection details for {call_sid}")
 
     system_prompt = connection_details.get("system_prompt", "You are a helpful assistant.")
     doc_ref = connection_details.get("doc_ref")
@@ -338,6 +347,9 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
     transcript = []
     
     try:
+        # --- NEW LOGGING ---
+        logging.info(f"Attempting to connect to Hume EVI for {call_sid}...")
+        
         # Use the new ChatConnectOptions
         options = ChatConnectOptions(
             system_prompt=system_prompt,
@@ -366,12 +378,14 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
             await handler.handle_twilio_audio()
 
     except Exception as e:
-        logging.error(f"WebSocket handling failed for {call_sid}: {e}", exc_info=True)
+        # --- NEW LOGGING ---
+        logging.error(f"WebSocket handling FAILED for {call_sid}: {e}", exc_info=True)
     finally:
         logging.info(f"Cleaning up WebSocket for {call_sid}")
         # Save results to Firestore
         if doc_ref and encounter_date and transcript:
-            save_call_results_to_firestore(doc_Tef, encounter_date, call_sid, transcript)
+            # --- FIX: Corrected typo 'doc_Tef' to 'doc_ref' ---
+            save_call_results_to_firestore(doc_ref, encounter_date, call_sid, transcript)
         
         # Mark the call as complete with Twilio (if not already done)
         try:
