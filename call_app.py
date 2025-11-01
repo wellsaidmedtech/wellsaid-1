@@ -62,7 +62,8 @@ if not REDIS_URL:
     redis_client = None
 else:
     try:
-        redis_client = redis.from_url(REDIS_URL, decode_responses=True) # decode_responses=True is crucial
+        # --- FIX: Removed 'decode_responses=True'. We will handle encoding/decoding manually. ---
+        redis_client = redis.from_url(REDIS_URL)
         redis_client.ping()
         logging.info("Successfully connected to Redis.")
     except Exception as e:
@@ -87,49 +88,66 @@ app.add_middleware(
 )
 
 
-# --- Redis/Local Connection Management ---
+# --- Redis/Local Connection Management (FIXED) ---
 
 def set_connection_details(call_sid, details):
     """Saves connection details to Redis (or local dict) with an expiration."""
-    # Serialize the doc_ref for storage
     details_serializable = {
         "system_prompt": details.get("system_prompt"),
         "doc_ref_path": details.get("doc_ref").path, # Store path, not object
         "encounter_date": details.get("encounter_date")
     }
-    details_json = json.dumps(details_serializable)
+    details_json_string = json.dumps(details_serializable)
     
     if redis_client:
-        # Set to expire in 1 hour (3600 seconds)
-        redis_client.setex(call_sid, 3600, details_json)
+        try:
+            # --- FIX: Manually encode the string to bytes for Redis ---
+            redis_client.setex(call_sid, 3600, details_json_string.encode('utf-8'))
+        except Exception as e:
+            logging.error(f"Redis setex failed: {e}")
     else:
-        active_connections_local[call_sid] = details_json # No expiration in local fallback
+        active_connections_local[call_sid] = details_json_string # No expiration in local fallback
 
 def get_connection_details(call_sid):
     """Retrieves connection details from Redis (or local dict)."""
-    details_json = None
+    details_json_string = None
     if redis_client:
-        details_json = redis_client.get(call_sid)
+        try:
+            # --- FIX: Redis 'get' returns bytes, so we must manually decode ---
+            details_bytes = redis_client.get(call_sid)
+            if details_bytes:
+                details_json_string = details_bytes.decode('utf-8')
+        except Exception as e:
+            logging.error(f"Redis get failed: {e}")
+            return None
     else:
-        details_json = active_connections_local.get(call_sid)
+        details_json_string = active_connections_local.get(call_sid)
         
-    if not details_json:
+    if not details_json_string:
+        logging.error(f"No connection details found for CallSid {call_sid} in Redis/cache.")
         return None
         
-    # Deserialize and re-hydrate the doc_ref
-    details_serializable = json.loads(details_json)
-    doc_ref = db.document(details_serializable["doc_ref_path"]) # Recreate doc_ref from path
-    
-    return {
-        "system_prompt": details_serializable.get("system_prompt"),
-        "doc_ref": doc_ref,
-        "encounter_date": details_serializable.get("encounter_date")
-    }
+    try:
+        # Deserialize and re-hydrate the doc_ref
+        details_serializable = json.loads(details_json_string)
+        doc_ref = db.document(details_serializable["doc_ref_path"]) # Recreate doc_ref from path
+        
+        return {
+            "system_prompt": details_serializable.get("system_prompt"),
+            "doc_ref": doc_ref,
+            "encounter_date": details_serializable.get("encounter_date")
+        }
+    except Exception as e:
+        logging.error(f"Failed to deserialize connection details: {e}")
+        return None
 
 def del_connection_details(call_sid):
     """Deletes connection details from Redis (or local dict)."""
     if redis_client:
-        redis_client.delete(call_sid)
+        try:
+            redis_client.delete(call_sid)
+        except Exception as e:
+            logging.error(f"Redis delete failed: {e}")
     else:
         if call_sid in active_connections_local:
             del active_connections_local[call_sid]
@@ -192,7 +210,7 @@ def generate_system_prompt(base_prompt, patient_data, purpose):
         except Exception as e:
             logging.error(f"Failed to fetch KB prompt {kb_doc_id}: {e}")
 
-    if purpose == "medication adherence" or purpose == "medication follow-up":
+    if purpose == "medication adherence" or purpose == "medFication follow-up":
         meds = ", ".join(patient_data.get("medications", [])) or "your new medications"
         system_prompt = system_prompt.replace("[Medication List]", meds)
     
@@ -308,6 +326,7 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
     
     connection_details = get_connection_details(call_sid)
     if not connection_details:
+        # NOTE: This is the error we've been hitting.
         logging.error(f"No active connection details found for CallSid {call_sid}. Closing WebSocket.")
         await websocket.close()
         return
@@ -419,7 +438,7 @@ async def handle_incoming_call(request: Request):
         system_prompt = generate_system_prompt(base_prompt, patient_data, call_purpose)
 
         # Store connection details in Redis (or local dict)
-        set_connection_details(call_sid, {
+        set_connection_details(call_sill, {
             "system_prompt": system_prompt,
             "doc_ref": doc_ref,
             "encounter_date": encounter_date
