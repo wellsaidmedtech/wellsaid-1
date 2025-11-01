@@ -11,10 +11,13 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from dotenv import load_dotenv
 
-# --- NEW HUME IMPORTS ---
+# --- NEW HUME IMPORTS (Corrected) ---
+# We are now using the correct AsyncHumeClient for EVI
 from hume.client import AsyncHumeClient
+# This is the fix for ChatConnectOptions:
 from hume.empathic_voice.chat.socket_client import ChatConnectOptions, SubscribeEvent
-from hume.api.models.api_error import ApiError
+# This is the fix for ApiError, as you discovered:
+from hume.core.api_error import ApiError
 
 # --- Configuration & Initialization ---
 
@@ -238,7 +241,7 @@ class EviHandler:
             await self.hume_socket.close() # Ensure Hume socket closes on error
 
 
-@app.websocket("/twilio/media/{call_sid}")
+@app.websocket("/twilio/media/{call_sillid}")
 async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
     """Handles the bidirectional audio stream from Twilio."""
     await websocket.accept()
