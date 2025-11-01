@@ -9,6 +9,7 @@ import base64
 import wave
 import io
 import random
+from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, JSONResponse
 from hume import HumeStreamClient
@@ -17,7 +18,7 @@ from twilio.twiml.voice_response import VoiceResponse, Connect
 from twilio.rest import Client as TwilioRestClient
 from twilio.base.exceptions import TwilioRestException
 from pydantic import BaseModel
-import firebase_admin # <-- NEW
+import firebase_admin 
 from firebase_admin import credentials, firestore 
 from dotenv import load_dotenv
 load_dotenv() # This line actually reads the .env file

@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin - Prompt Editor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style type="text/tailwindcss">
+        @layer utilities {
+            .btn {
+                @apply font-bold py-2 px-4 rounded-lg shadow transition-all duration-200;
+            }
+            .btn-primary {
+                @apply bg-blue-600 text-white hover:bg-blue-700;
+            }
+            .btn-secondary {
+                @apply bg-gray-200 text-gray-800 hover:bg-gray-300;
+            }
+            .card {
+                @apply bg-white shadow-lg rounded-lg overflow-hidden;
+            }
+            .input-field {
+                @apply block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm;
+            }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans leading-normal tracking-normal">
+
+    <!-- Header Navigation -->
+    <nav class="bg-white shadow-md p-4">
+        <div class="container mx-auto flex justify-between items-center">
+            <div class="text-2xl font-bold text-blue-600">AI Patient Dashboard</div>
+            <div>
+                <a href="{{ url_for('dashboard') }}" class="btn-secondary btn">Back to Dashboard</a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="container mx-auto p-8">
+        
+        <h1 class="text-3xl font-bold text-gray-800 mb-6">AI Agent Prompt Editor</h1>
+
+        <!-- Flash Messages -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="p-4 mb-4 rounded-md {{ 'bg-green-100 text-green-700' if category == 'success' else 'bg-red-100 text-red-700' }}">
+                        {{ message }}
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <form action="{{ url_for('save_prompts') }}" method="POST" class="card">
+            <div class="p-6 space-y-8">
+
+                <!-- Prompt: Identity -->
+                <div>
+                    <label for="prompt_identity" class="block text-lg font-medium text-gray-700">Agent Identity (Identity)</label>
+                    <p class="text-sm text-gray-500 mb-2">Defines the AI's name, personality, and core identity. (Document: <code>prompt_identity</code>)</p>
+                    <textarea id="prompt_identity" name="prompt_identity" rows="10" class="input-field font-mono text-sm">{{ prompts.get('prompt_identity', '') }}</textarea>
+                </div>
+
+                <!-- Prompt: Rules -->
+                <div>
+                    <label for="prompt_rules" class="block text-lg font-medium text-gray-700">Agent Safety Rules (Rules)</label>
+                    <p class="text-sm text-gray-500 mb-2">Core safety guardrails and immutable rules. (Document: <code>prompt_rules</code>)</p>
+                    <textarea id="prompt_rules" name="prompt_rules" rows="10" class="input-field font-mono text-sm">{{ prompts.get('prompt_rules', '') }}</textarea>
+                </div>
+                
+                <hr>
+
+                <!-- Knowledge Base: Medication Adherence -->
+                <div>
+                    <label for="kb_medication_adherence" class="block text-lg font-medium text-gray-700">Knowledge Base: Medication Adherence</label>
+                    <p class="text-sm text-gray-500 mb-2">Protocol for medication adherence check-in calls. (Document: <code>kb_medication_adherence</code>)</p>
+                    <textarea id="kb_medication_adherence" name="kb_medication_adherence" rows="15" class="input-field font-mono text-sm">{{ prompts.get('kb_medication_adherence', '') }}</textarea>
+                </div>
+                
+                <!-- Knowledge Base: Post-Op Check-in -->
+                <div>
+                    <label for="kb_post_op_checkin" class="block text-lg font-medium text-gray-700">Knowledge Base: Post-Op Check-in</label>
+                    <p class="text-sm text-gray-500 mb-2">Protocol for post-operative check-in calls. (Document: <code>kb_post_op_checkin</code>)</p>
+                    <textarea id="kb_post_op_checkin" name="kb_post_op_checkin" rows="15" class="input-field font-mono text-sm">{{ prompts.get('kb_post_op_checkin', '') }}</textarea>
+                </div>
+
+                <!-- You can add more textareas here for new knowledge base articles -->
+
+            </div>
+            
+            <!-- Form Actions -->
+            <div class="bg-gray-50 px-6 py-4 flex justify-end">
+                <button type="submit" class="btn btn-primary">Save All Prompts</button>
+            </div>
+        </form>
+    </div>
+
+</body>
+</html>
+
