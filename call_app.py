@@ -11,12 +11,9 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from dotenv import load_dotenv
 
-# --- NEW HUME IMPORTS (Corrected) ---
-# We are now using the correct AsyncHumeClient for EVI
+# --- Hume Imports ---
 from hume.client import AsyncHumeClient
-# This is the fix for ChatConnectOptions:
 from hume.empathic_voice.chat.socket_client import ChatConnectOptions, SubscribeEvent
-# This is the fix for ApiError:
 from hume.core.api_error import ApiError
 
 # --- Configuration & Initialization ---
@@ -50,11 +47,9 @@ twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
 # 5. Initialize Hume Client
 HUME_API_KEY = os.getenv("HUME_API_KEY")
-HUME_SECRET_KEY = os.getenv("HUME_SECRET_KEY") # Used as the secret_key for EVI
+HUME_SECRET_KEY = os.getenv("HUME_SECRET_KEY")
 if not all([HUME_API_KEY, HUME_SECRET_KEY]):
     logging.error("Hume AI credentials missing. Check environment variables.")
-    
-# Initialize the NEW Async client (FIXED: using keyword argument)
 hume_client = AsyncHumeClient(api_key=HUME_API_KEY)
 
 # 6. Initialize FastAPI App
@@ -76,17 +71,17 @@ app.add_middleware(
 # Global dictionary to keep track of active connections
 active_connections = {}
 
-# --- Helper Functions ---
-# (These functions are unchanged and correct)
+# --- Helper Functions (FIXED: Changed from async to sync) ---
 
-async def get_patient_doc_ref(clinic_id, mrn):
-    """Fetches a patient's Firestore document reference."""
+def get_patient_doc_ref(clinic_id, mrn):
+    """Fetches a patient's Firestore document reference. (SYNC)"""
     if not db:
         logging.error("Firestore DB not available.")
         return None
     try:
         doc_ref = db.collection(f"clinics/{clinic_id}/patients").document(mrn)
-        doc = await doc_ref.get()
+        # --- FIX: Removed 'await' ---
+        doc = doc_ref.get()
         if not doc.exists:
             logging.warning(f"Patient doc not found for clinic {clinic_id}, MRN {mrn}")
             return None
@@ -95,8 +90,8 @@ async def get_patient_doc_ref(clinic_id, mrn):
         logging.error(f"Error fetching patient doc ref: {e}")
         return None
 
-async def fetch_prompts(prompt_ids):
-    """Fetches a list of prompts from the prompt_library collection."""
+def fetch_prompts(prompt_ids):
+    """Fetches a list of prompts from the prompt_library collection. (SYNC)"""
     if not db:
         logging.error("Firestore DB not available.")
         return {}
@@ -105,7 +100,8 @@ async def fetch_prompts(prompt_ids):
     try:
         for doc_id in prompt_ids:
             doc_ref = db.collection("prompt_library").document(doc_id)
-            doc = await doc_ref.get()
+            # --- FIX: Removed 'await' ---
+            doc = doc_ref.get()
             if doc.exists:
                 prompt_data[doc_id] = doc.to_dict().get("content", "")
             else:
@@ -115,8 +111,8 @@ async def fetch_prompts(prompt_ids):
         logging.error(f"Error fetching prompts: {e}")
     return prompt_data
 
-async def generate_system_prompt(base_prompt, patient_data, purpose):
-    """Generates a dynamic system prompt based on call purpose and patient data."""
+def generate_system_prompt(base_prompt, patient_data, purpose):
+    """Generates a dynamic system prompt based on call purpose and patient data. (SYNC)"""
     system_prompt = base_prompt.replace("[Patient Name]", patient_data.get("name", "the patient"))
     
     kb_doc_id = ""
@@ -127,7 +123,8 @@ async def generate_system_prompt(base_prompt, patient_data, purpose):
     
     if kb_doc_id:
         try:
-            kb_prompts = await fetch_prompts([kb_doc_id])
+            # --- FIX: Removed 'await' ---
+            kb_prompts = fetch_prompts([kb_doc_id])
             kb_content = kb_prompts.get(kb_doc_id)
             if kb_content:
                 system_prompt += f"\n\n--- {kb_doc_id.replace('_', ' ').title()} Protocol ---\n{kb_content}"
@@ -146,8 +143,8 @@ async def generate_system_prompt(base_prompt, patient_data, purpose):
     return system_prompt
 
 
-async def save_call_results_to_firestore(doc_ref, encounter_date, call_sid, transcript):
-    """Saves the call results back to the patient's encounter in Firestore."""
+def save_call_results_to_firestore(doc_ref, encounter_date, call_sid, transcript):
+    """Saves the call results back to the patient's encounter in Firestore. (SYNC)"""
     if not db:
         logging.error("Firestore DB not available, cannot save call results.")
         return
@@ -160,7 +157,8 @@ async def save_call_results_to_firestore(doc_ref, encounter_date, call_sid, tran
             f"{encounter_path}.call_transcript": "\n".join(transcript)
         }
         
-        await doc_ref.update(update_data)
+        # --- FIX: Removed 'await' ---
+        doc_ref.update(update_data)
         logging.info(f"Successfully saved call results for CallSid {call_sid} to encounter {encounter_date}")
         
     except Exception as e:
@@ -288,13 +286,13 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
             await handler.handle_twilio_audio()
 
     except Exception as e:
-        # --- FIX 2: Corrected `call_dimsid` to `call_sid` ---
         logging.error(f"WebSocket handling failed for {call_sid}: {e}", exc_info=True)
     finally:
         logging.info(f"Cleaning up WebSocket for {call_sid}")
         # Save results to Firestore
         if doc_ref and encounter_date and transcript:
-            await save_call_results_to_firestore(doc_ref, encounter_date, call_sid, transcript)
+            # --- FIX: Removed 'await' ---
+            save_call_results_to_firestore(doc_ref, encounter_date, call_sid, transcript)
         
         # Mark the call as complete with Twilio (if not already done)
         try:
@@ -318,7 +316,6 @@ async def handle_incoming_call(request: Request):
     
     try:
         form_data = await request.form()
-        # --- FIX 1: Corrected `form__data` to `form_data` ---
         call_sid = form_data.get("CallSid")
         
         mrn = request.query_params.get("mrn")
@@ -334,12 +331,14 @@ async def handle_incoming_call(request: Request):
 
         logging.info(f"Processing call for Clinic: {clinic_id}, MRN: {mrn}, CallSid: {call_sid}")
 
-        doc_ref = await get_patient_doc_ref(clinic_id, mrn)
+        # --- FIX: Removed 'await' ---
+        doc_ref = get_patient_doc_ref(clinic_id, mrn)
         if not doc_ref:
             logging.error(f"Could not find patient doc ref for MRN {mrn}. CallSid: {call_sid}")
             return VoiceResponse().say("An application error occurred. Could not find patient records.")
         
-        patient_data = (await doc_ref.get()).to_dict()
+        # --- FIX: Removed 'await' ---
+        patient_data = doc_ref.get().to_dict()
 
         scheduled_call = None
         encounter_date = None
@@ -358,10 +357,12 @@ async def handle_incoming_call(request: Request):
         call_purpose = scheduled_call.get("purpose", "a routine check-in")
         logging.info(f"Found scheduled call with purpose: {call_purpose}")
 
-        base_prompts_data = await fetch_prompts(['prompt_identity', 'prompt_rules'])
+        # --- FIX: Removed 'await' ---
+        base_prompts_data = fetch_prompts(['prompt_identity', 'prompt_rules'])
         base_prompt = f"{base_prompts_data.get('prompt_identity', '')}\n\n{base_prompts_data.get('prompt_rules', '')}"
         
-        system_prompt = await generate_system_prompt(base_prompt, patient_data, call_purpose)
+        # --- FIX: Removed 'await' ---
+        system_prompt = generate_system_prompt(base_prompt, patient_data, call_purpose)
 
         active_connections[call_sid] = {
             "system_prompt": system_prompt,
