@@ -2,6 +2,7 @@ fastapi
 uvicorn  # No more [standard]
 websockets  # Explicitly add this
 python-dotenv
+python-multipart 
 twilio
 firebase-admin
 hume==0.11.1
