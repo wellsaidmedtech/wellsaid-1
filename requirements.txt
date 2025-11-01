@@ -1,25 +1,11 @@
-# --- FastAPI Server ---
-
-fastapi
-uvicorn
-python-dotenv
-python-multipart
-
-# --- Twilio & Hume ---
-
-twilio
-hume>=0.10.0
-websocket-client
-
-# --- Databases & Storage ---
-
-firebase-admin
-boto3
-
-# --- General Utilities ---
-
-requests
-
-# --- Flask Web Portal ---
-
 flask
+python-dotenv
+twilio
+firebase-admin
+uvicorn
+fastapi
+python-multipart
+boto3
+websocket-client
+fastapi[all]
+hume>=0.11.0

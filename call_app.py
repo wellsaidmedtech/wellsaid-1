@@ -11,9 +11,12 @@ from fastapi import FastAPI, Request, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware # For CORS
 from twilio.twiml.voice_response import VoiceResponse, Start
-from hume import HumeStreamClient, HumeClientException
+
+# Correct import for the new Hume SDK (v0.10.0+)
 from hume.models.config import LanguageConfig
-import boto3
+from hume import HumeStreamClient, HumeClientException
+
+import boto3 # Boto3 is imported but not used, can be removed if not saving to S3
 
 # --- 1. Initialization & Config ---
 
@@ -44,26 +47,33 @@ app.add_middleware(
 # --- 3. Firebase Initialization ---
 db = None
 try:
-    # This automatically finds and uses the GOOGLE_APPLICATION_CREDENTIALS env variable
-    # which Render sets from your Secret File.
+    # This is the official env variable the Firebase Admin SDK looks for.
     cred_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    
     if not cred_path:
-        logging.warning("GOOGLE_APPLICATION_CREDENTIALS not set. Firebase may not initialize.")
-        # Attempt default initialization (might work in some GCP environments)
-        firebase_admin.initialize_app()
+        logging.warning("GOOGLE_APPLICATION_CREDENTIALS env var not set. This is OK on Render if using Secret File.")
+        # Render's "Secret File" sets this path. If it's not set, we might be in an env
+        # where the JSON content is directly in another var.
+        cred_json_str = os.environ.get("FIREBASE_CREDENTIALS_JSON_CONTENT")
+        if cred_json_str:
+            logging.info("Found FIREBASE_CREDENTIALS_JSON_CONTENT. Parsing as JSON.")
+            cred_json = json.loads(cred_json_str)
+            cred = credentials.Certificate(cred_json)
+        else:
+            logging.warning("No Firebase credentials found. Defaulting to application_default().")
+            # This will only work in a GCP environment.
+            cred = credentials.ApplicationDefault()
+            
+        firebase_admin.initialize_app(cred)
     else:
-        # Check if the path points to a file that exists (for Render Secret Files)
+        # This is the standard path (used by Render Secret Files)
         if os.path.exists(cred_path):
+             logging.info(f"Initializing Firebase with key from path: {cred_path}")
              cred = credentials.Certificate(cred_path)
              firebase_admin.initialize_app(cred)
         else:
-            # Fallback for environments where the variable *is* the JSON content
-             logging.info("Credential path doesn't exist. Trying to parse as JSON string.")
-             cred_json = json.loads(os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON_CONTENT", "{}"))
-             if not cred_json:
-                raise Exception("No valid Firebase credentials found.")
-             cred = credentials.Certificate(cred_json)
-             firebase_admin.initialize_app(cred)
+             logging.error(f"GOOGLE_APPLICATION_CREDENTIALS path not found: {cred_path}. Trying default.")
+             firebase_admin.initialize_app() # Fallback
 
     db = firestore.client()
     logging.info("Firebase Firestore client initialized successfully.")
@@ -85,7 +95,7 @@ async def generate_system_prompt(patient_data, clinic_name, base_prompt):
     """
     if not db:
         logging.error("Firestore DB not available in generate_system_prompt.")
-        return base_prompt # Return default prompt
+        return base_prompt, None # Return default prompt and no encounter
 
     # Start with the base prompt (Identity + Rules)
     prompt_sections = [base_prompt]
@@ -96,10 +106,15 @@ async def generate_system_prompt(patient_data, clinic_name, base_prompt):
     # Look for a scheduled AI phone call
     scheduled_ai_call = None
     if 'encounters' in patient_data and patient_data['encounters']:
-        for date, encounter in patient_data['encounters'].items():
+        today = datetime.now().strftime('%Y-%m-%d')
+        # Sort encounters by date to find the soonest one
+        sorted_encounters = sorted(patient_data['encounters'].items())
+        
+        for date, encounter in sorted_encounters:
             if (encounter and isinstance(encounter, dict) and
                 encounter.get('status') == 'scheduled' and 
-                encounter.get('type') == 'AI phone call'):
+                encounter.get('type') == 'AI phone call' and
+                date >= today): # Only look for calls on or after today
                 scheduled_ai_call = encounter
                 scheduled_ai_call['date'] = date # Store the date for saving results
                 break # Found the first scheduled call
@@ -203,7 +218,7 @@ async def save_call_results_to_firestore(patient_data, call_sid, transcript, sch
             patient_doc = snapshot.to_dict()
             encounters = patient_doc.get('encounters', {})
 
-            if scheduled_encounter and scheduled_encounter['date'] in encounters:
+            if scheduled_encounter and scheduled_encounter.get('date') in encounters:
                 # Case 1: We have a scheduled encounter. Update it.
                 encounter_date = scheduled_encounter['date']
                 logging.info(f"Updating scheduled encounter for date: {encounter_date}")
@@ -220,14 +235,14 @@ async def save_call_results_to_firestore(patient_data, call_sid, transcript, sch
                 # Create a new encounter for today.
                 today_date = datetime.now().strftime('%Y-%m-%d')
                 encounter_time = datetime.now().strftime('%H:%M:%S')
-                new_encounter_key = f"{today_date}_{encounter_time}"
+                new_encounter_key = f"{today_date}_{encounter_time.replace(':', '')}" # Make key FS-safe
                 
                 logging.info(f"Creating new ad-hoc encounter with key: {new_encounter_key}")
                 
                 new_encounter_data = {
                     'status': 'completed',
                     'type': 'AI phone call',
-                    'purpose': 'Ad-hoc follow-up call',
+                    'purpose': 'Ad-hoc follow-up call (unscheduled)',
                     'call_sid': call_sid,
                     'call_transcript': transcript
                 }
@@ -259,27 +274,40 @@ async def start_hume_evi_conversation(client: HumeStreamClient, call_sid: str, p
             active_connections[call_sid]['hume_client'] = websocket
             
             async for message in websocket:
-                if message.get("type") == "user_message":
+                msg_type = message.get("type")
+                
+                if msg_type == "user_message":
                     msg = message.get("message", {}).get("content", "")
                     transcript.append(f"Patient: {msg}")
-                elif message.get("type") == "assistant_message":
+                elif msg_type == "assistant_message":
                     msg = message.get("message", {}).get("content", "")
                     transcript.append(f"Assistant: {msg}")
-                elif message.get("type") == "audio_output":
+                elif msg_type == "audio_output":
                     # Send audio from Hume to Twilio
                     audio_chunk = message.get("data")
                     if audio_chunk:
-                        await active_connections[call_sid]['twilio_ws'].send_json({
-                            "event": "media",
-                            "streamSid": active_connections[call_sid]['stream_sid'],
-                            "media": {
-                                "payload": audio_chunk
-                            }
-                        })
-                elif message.get("type") == "error":
+                        # Ensure connection is still active
+                        if call_sid not in active_connections or 'twilio_ws' not in active_connections[call_sid]:
+                            logging.warning(f"Twilio WS for {call_sid} gone, cannot send audio.")
+                            break
+                        
+                        try:
+                            await active_connections[call_sid]['twilio_ws'].send_json({
+                                "event": "media",
+                                "streamSid": active_connections[call_sid]['stream_sid'],
+                                "media": {
+                                    "payload": audio_chunk
+                                }
+                            })
+                        except Exception as e:
+                            logging.warning(f"Error sending audio to Twilio WS for {call_sid}: {e}")
+                            # This can happen if Twilio hangs up first.
+                            break
+                            
+                elif msg_type == "error":
                     logging.error(f"Hume EVI Error for CallSid {call_sid}: {message.get('error')}")
                     transcript.append(f"HUME_ERROR: {message.get('error')}")
-                elif message.get("type") == "conversation_end":
+                elif msg_type == "conversation_end":
                     logging.info(f"Hume EVI conversation_end received for CallSid: {call_sid}")
                     transcript.append("INFO: Conversation ended.")
                     break
@@ -307,21 +335,17 @@ async def cleanup_connection(call_sid: str, reason: str):
     if call_sid in active_connections:
         logging.info(f"Cleaning up connections for CallSid: {call_sid} (Reason: {reason})")
         
-        # Close Hume WebSocket if it exists
+        # Mark Hume client for closure, but don't await
         hume_client = active_connections[call_sid].get('hume_client')
         if hume_client:
-            try:
-                # This might not be the correct way to close, depending on Hume's SDK
-                # We'll just remove the reference.
-                pass
-            except Exception as e:
-                logging.warning(f"Error closing Hume client for {call_sid}: {e}")
+            # We don't actively close Hume's client; it's managed by the 'async with'
+            pass
 
         # Close Twilio WebSocket if it exists
         twilio_ws = active_connections[call_sid].get('twilio_ws')
         if twilio_ws:
             try:
-                await twilio_ws.close()
+                await twilio_ws.close(code=1000, reason="Call ended")
             except Exception as e:
                 logging.warning(f"Error closing Twilio WS for {call_sid}: {e}")
         
@@ -355,23 +379,23 @@ async def wake_up():
 
 
 @app.post("/twilio/incoming_call")
-async def handle_incoming_call(request: Request, CallSid: str = Form(None)):
+async def handle_incoming_call(request: Request):
     """
     Handles incoming Twilio calls (both direct calls and click-to-call transfers).
     This function now generates a dynamic system prompt for Hume EVI.
     """
-    logging.info(f"Twilio Call Webhook Received (CallSid: {CallSid})")
-    
-    if not db:
-        logging.error("CRITICAL: Firestore DB not available. Cannot process call.")
-        response = VoiceResponse()
-        response.say("We are sorry, our system is experiencing database issues. Please call back later.")
-        response.hangup()
-        return PlainTextResponse(str(response), media_type='application/xml')
-        
+    CallSid = None # Initialize
     try:
         form_data = await request.form()
-        CallSid = form_data.get('CallSid', CallSid)
+        CallSid = form_data.get('CallSid')
+        logging.info(f"Twilio Call Webhook Received (CallSid: {CallSid})")
+        
+        if not db:
+            logging.error("CRITICAL: Firestore DB not available. Cannot process call.")
+            response = VoiceResponse()
+            response.say("We are sorry, our system is experiencing database issues. Please call back later.")
+            response.hangup()
+            return PlainTextResponse(str(response), media_type='application/xml')
         
         # Get MRN and ClinicID from query params (passed by our website_app.py)
         mrn = request.query_params.get('mrn')
@@ -441,6 +465,7 @@ async def handle_incoming_call(request: Request, CallSid: str = Form(None)):
         try:
             logging.info(f"Connecting to Hume EVI for CallSid: {CallSid}")
             config = LanguageConfig(system_prompt=system_prompt)
+            # Use the correct key for Hume
             client = HumeStreamClient(os.environ.get("HUME_API_KEY"), config=config)
             
             # Store connection info *before* starting the task
@@ -512,6 +537,7 @@ async def websocket_endpoint(websocket: WebSocket, call_sid: str):
                     hume_ws = active_connections[call_sid]['hume_client']
                     if hume_ws:
                         # Send audio data (base64) to Hume
+                        # The new SDK expects raw bytes, not base64 encoded string
                         await hume_ws.send_bytes(payload.encode('utf-8'))
                 else:
                     logging.warning(f"No Hume client found for CallSid {call_sid}. Cannot forward audio.")
@@ -526,5 +552,5 @@ async def websocket_endpoint(websocket: WebSocket, call_sid: str):
         logging.error(f"Error in Twilio WebSocket handler for CallSid {call_sid}: {e}", exc_info=True)
     finally:
         # This finally block will run when Twilio hangs up or the stream stops
-        await cleanup_connection(call_sid, "Twilio WebSocket closed")
+        await cleanup_connection(call_D, "Twilio WebSocket closed")
 
