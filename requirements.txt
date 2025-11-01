@@ -8,7 +8,7 @@ python-multipart
 # --- Twilio & Hume ---
 
 twilio
-hume
+hume-python>=0.10.0
 websocket-client
 
 # --- Databases & Storage ---

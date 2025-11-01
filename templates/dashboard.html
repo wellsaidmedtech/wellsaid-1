@@ -41,7 +41,6 @@
         <div class="container mx-auto flex justify-between items-center">
             <div class="text-2xl font-bold text-blue-600">AI Patient Dashboard</div>
             <div>
-                <!-- NEW: Link to Prompt Editor -->
                 <a href="{{ url_for('admin_prompts') }}" class="btn-secondary btn mr-2">Prompt Editor</a>
                 <a href="{{ url_for('create_patient') }}" class="btn-primary btn">Create New Patient</a>
             </div>
@@ -147,20 +146,15 @@
                                     <p class="text-gray-900 whitespace-no-wrap">{{ patient.phone }}</p>
                                 </td>
                                 <td class="table-cell">
-                                    {% set next_action = {'date': '9999', 'purpose': 'N/A'} %}
-                                    {% if patient.encounters %}
-                                        {% for date, enc in patient.encounters.items() %}
-                                            {% if enc.status == 'scheduled' and date < next_action.date %}
-                                                {% set_global next_action = {'date': date, 'purpose': enc.purpose} %}
-                                            {% endif %}
-                                        {% endfor %}
-                                    {% endif %}
-                                    
-                                    {% if next_action.date != '9999' %}
-                                        <p class="text-gray-900 whitespace-no-wrap">{{ next_action.date }}</g></p>
-                                        <p class="text-gray-600 whitespace-no-wrap text-xs">{{ next_action.purpose }}</p>
+                                    <!-- 
+                                    This logic is now simplified because it's handled in website_app.py
+                                    The invalid `set_global` tag is removed.
+                                    -->
+                                    {% if patient.next_action.date %}
+                                        <p class="text-gray-900 whitespace-no-wrap">{{ patient.next_action.date }}</p>
+                                        <p class="text-gray-600 whitespace-no-wrap text-xs">{{ patient.next_action.purpose }}</p>
                                     {% else %}
-                                        <p class="text-gray-500 whitespace-no-wrap">None Scheduled</p>
+                                        <p class="text-gray-500 whitespace-no-wrap">{{ patient.next_action.purpose }}</p>
                                     {% endif %}
                                 </td>
                                 <td class="table-cell space-x-2">
@@ -206,7 +200,8 @@
         }
 
         // Redirect to the /call endpoint
-        window.location.href = `{{ url_for('call_patient') }}?${params.toString()}`;
+        // Corrected the quoting for the url_for inside the JavaScript string
+        window.location.href = "{{ url_for('call_patient') }}" + `?${params.toString()}`;
     }
 
     // Server Wake Up
@@ -251,6 +246,20 @@
                 });
         });
     }
+
+    // Fix for the querySelectorAll syntax that you flagged
+    document.addEventListener("DOMContentLoaded", function() {
+        // This is just a placeholder in case you need to select those forms again.
+        // The current call logic (initiateCall) doesn't use this, but I'm correcting the syntax
+        // in case any other script relies on it.
+        try {
+            const callForms = document.querySelectorAll('form[action="{{ url_for("call_patient") }}"]');
+            console.log("Found call forms:", callForms.length);
+        } catch(e) {
+            console.error("Error selecting forms (this might be ok):", e);
+        }
+    });
+
 </script>
 </body>
 </html>

@@ -1,5 +1,6 @@
 import os
 import json
+import logging # <-- ADDED THIS
 from flask import Flask, render_template, request, redirect, url_for, flash
 from dotenv import load_dotenv
 from twilio.rest import Client
@@ -8,6 +9,9 @@ from firebase_admin import credentials, firestore
 
 # --- Initialization ---
 load_dotenv()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO) # <-- ADDED THIS
 
 # Initialize Firebase
 # Make sure your GOOGLE_APPLICATION_CREDENTIALS env var is set
@@ -85,6 +89,20 @@ def dashboard():
                 # Apply name filter
                 if patient_name_filter and patient_name_filter not in patient_data.get('name', '').lower():
                     continue
+                
+                # --- LOGIC TO FIND NEXT ACTION ---
+                # This logic is moved from the template to here
+                next_action = {'date': '9999', 'purpose': 'N/A'}
+                if 'encounters' in patient_data and patient_data['encounters']:
+                    for date, enc in patient_data['encounters'].items():
+                        if enc and enc.get('status') == 'scheduled' and date < next_action['date']:
+                            next_action = {'date': date, 'purpose': enc.get('purpose', 'N/A')}
+                
+                if next_action['date'] == '9999':
+                    patient_data['next_action'] = {'date': None, 'purpose': 'None Scheduled'}
+                else:
+                    patient_data['next_action'] = next_action
+                # --- END OF LOGIC ---
                     
                 patients_list.append(patient_data)
                 
@@ -370,4 +388,6 @@ if __name__ == "__main__":
     # Note: `debug=True` is great for development.
     # Turn it off in a production environment.
     app.run(debug=True, port=8080)
+
+
 
