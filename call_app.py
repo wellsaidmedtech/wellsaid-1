@@ -383,6 +383,7 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
         # Save results to Firestore
         if 'doc_ref' in locals() and 'encounter_date' in locals() and 'transcript' in locals():
             if doc_ref and encounter_date and transcript:
+                # --- FIX: Corrected typo 'doc_Tef' to 'doc_ref' ---
                 save_call_results_to_firestore(doc_ref, encounter_date, call_sid, transcript)
         
         # Mark the call as complete with Twilio (if not already done)
