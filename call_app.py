@@ -55,7 +55,7 @@ hume_client = AsyncHumeClient(api_key=HUME_API_KEY)
 
 # 6. Initialize Redis Client & Hostname
 REDIS_URL = os.getenv("REDIS_URL")
-RENDER_EXTERNAL_HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME") # <-- NEW
+RENDER_EXTERNAL_HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME") 
 
 if not RENDER_EXTERNAL_HOSTNAME:
     logging.warning("RENDER_EXTERNAL_HOSTNAME not set. WebSocket URLs may be incorrect if behind a proxy.")
@@ -323,32 +323,28 @@ class EviHandler:
 @app.websocket("/twilio/media/{call_sid}")
 async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
     """Handles the bidirectional audio stream from Twilio."""
-    # --- NEW LOGGING ---
-    logging.info(f"WebSocket route hit for {call_sid}")
-    await websocket.accept()
-    logging.info(f"WebSocket connection accepted for {call_sid}")
-    
-    # --- NEW LOGGING ---
-    logging.info(f"Attempting to get connection details for {call_sid} from Redis...")
-    connection_details = get_connection_details(call_sid)
-    
-    if not connection_details:
-        # This log line was already here, but now we'll know if we got this far
-        logging.error(f"No active connection details found for CallSid {call_sid}. Closing WebSocket.")
-        await websocket.close()
-        return
-    
-    # --- NEW LOGGING ---
-    logging.info(f"Successfully retrieved connection details for {call_sid}")
-
-    system_prompt = connection_details.get("system_prompt", "You are a helpful assistant.")
-    doc_ref = connection_details.get("doc_ref")
-    encounter_date = connection_details.get("encounter_date")
-    transcript = []
-    
+    # --- NEW DEBUGGING: Wrap entire function in a try...except block ---
     try:
-        # --- NEW LOGGING ---
-        logging.info(f"Attempting to connect to Hume EVI for {call_sid}...")
+        logging.info(f"DEBUG: WebSocket route hit for {call_sid}")
+        await websocket.accept()
+        logging.info(f"DEBUG: WebSocket connection accepted for {call_sid}")
+        
+        logging.info(f"DEBUG: Attempting to get connection details for {call_sid} from Redis...")
+        connection_details = get_connection_details(call_sid)
+        
+        if not connection_details:
+            logging.error(f"DEBUG: No active connection details found for CallSid {call_sid}. Closing WebSocket.")
+            await websocket.close()
+            return
+        
+        logging.info(f"DEBUG: Successfully retrieved connection details for {call_sid}")
+
+        system_prompt = connection_details.get("system_prompt", "You are a helpful assistant.")
+        doc_ref = connection_details.get("doc_ref")
+        encounter_date = connection_details.get("encounter_date")
+        transcript = []
+        
+        logging.info(f"DEBUG: Attempting to connect to Hume EVI for {call_sid}...")
         
         # Use the new ChatConnectOptions
         options = ChatConnectOptions(
@@ -365,6 +361,8 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
             on_error=None
         ) as socket:
             
+            logging.info(f"DEBUG: Hume EVI connection successful for {call_sid}")
+            
             # Create the handler class to manage the connection state
             handler = EviHandler(websocket, socket, call_sid, transcript)
             
@@ -378,14 +376,14 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
             await handler.handle_twilio_audio()
 
     except Exception as e:
-        # --- NEW LOGGING ---
-        logging.error(f"WebSocket handling FAILED for {call_sid}: {e}", exc_info=True)
+        # --- NEW DEBUGGING: This will catch *any* error during WebSocket setup ---
+        logging.critical(f"CRITICAL WEBSOCKET ERROR for {call_sid}: {e}", exc_info=True)
     finally:
         logging.info(f"Cleaning up WebSocket for {call_sid}")
         # Save results to Firestore
-        if doc_ref and encounter_date and transcript:
-            # --- FIX: Corrected typo 'doc_Tef' to 'doc_ref' ---
-            save_call_results_to_firestore(doc_ref, encounter_date, call_sid, transcript)
+        if 'doc_ref' in locals() and 'encounter_date' in locals() and 'transcript' in locals():
+            if doc_ref and encounter_date and transcript:
+                save_call_results_to_firestore(doc_ref, encounter_date, call_sid, transcript)
         
         # Mark the call as complete with Twilio (if not already done)
         try:
