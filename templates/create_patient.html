@@ -1,257 +1,205 @@
 <!DOCTYPE html>
-<html lang="en" class="h-full bg-gray-50">
+<html lang="en" class="h-full bg-gray-100">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Create New Patient</title>
+    <title>Create Patient - WellSaid AI Demo</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <!-- This is the fix: added type="text/tailwindcss" -->
     <style type="text/tailwindcss">
-        body { font-family: 'Inter', sans-serif; }
-        .btn { @apply inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white focus:outline-none focus:ring-2 focus:ring-offset-2; }
-        .btn-primary { @apply bg-blue-600 hover:bg-blue-700 focus:ring-blue-500; }
-        .btn-secondary { @apply bg-gray-600 hover:bg-gray-700 focus:ring-gray-500; }
-        .btn-secondary-sm { @apply px-3 py-1.5 text-xs; }
-        .btn-danger-sm { @apply bg-red-600 hover:bg-red-700 focus:ring-red-500 px-3 py-1.5 text-xs text-white rounded; }
-        .form-input { @apply block w-full shadow-sm sm:text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500; }
-        .form-select { @apply block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md; }
-        .form-label { @apply block text-sm font-medium text-gray-700; }
-        .card { @apply bg-white shadow overflow-hidden sm:rounded-lg; }
-        .card-header { @apply px-4 py-5 sm:px-6 border-b border-gray-200; }
-        .card-title { @apply text-lg leading-6 font-medium text-gray-900; }
-        .card-content { @apply px-4 py-5 sm:p-6; }
+        @layer components {
+            .btn { @apply font-bold py-2 px-4 rounded-lg shadow transition-all duration-150 ease-in-out; }
+            .btn-primary { @apply bg-blue-600 text-white hover:bg-blue-700 active:bg-blue-800; }
+            .btn-secondary { @apply bg-gray-200 text-gray-800 hover:bg-gray-300 active:bg-gray-400; }
+            .btn-danger { @apply bg-red-500 text-white hover:bg-red-600; }
+            .form-input { @apply block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-blue-600 sm:text-sm sm:leading-6; }
+            .form-select { @apply block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 focus:ring-2 focus:ring-inset focus:ring-blue-600 sm:text-sm sm:leading-6; }
+            .form-label { @apply block text-sm font-medium leading-6 text-gray-900; }
+        }
     </style>
 </head>
-<body class="h-full">
+<body class="h-full font-sans antialiased">
     <div class="min-h-full">
-        <nav class="bg-white shadow-sm">
-            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                <div class="flex justify-between h-16">
-                    <div class="flex">
-                        <div class="flex-shrink-0 flex items-center">
-                            <svg class="h-8 w-auto text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
-                            </svg>
-                            <span class="ml-2 text-xl font-bold text-gray-800">AI Health Dashboard</span>
-                        </div>
-                    </div>
-                    <div class="flex items-center">
-                        <a href="{{ url_for('dashboard') }}" class="text-sm font-medium text-gray-500 hover:text-gray-700">
-                            &larr; Back to Dashboard
-                        </a>
-                    </div>
-                </div>
-            </div>
-        </nav>
+        <!-- Header -->
+        <header class="bg-white shadow-sm">
+            <nav class="container mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
+                <!-- FIX: Title is now "WellSaid AI Demo" and links to the dashboard -->
+                <a href="{{ url_for('dashboard') }}" class="text-2xl font-bold text-gray-900">WellSaid AI Demo</a>
+                <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Cancel</a>
+            </nav>
+        </header>
 
-        <div class="py-10">
-            <header class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
-                <h1 class="text-3xl font-bold leading-tight text-gray-900">Create New Patient</h1>
-            </header>
+        <!-- Main Content -->
+        <main class="py-10">
+            <div class="container mx-auto max-w-3xl px-4 sm:px-6 lg:px-8">
 
-            <main class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 mt-6">
                 <!-- Flash Messages -->
                 {% with messages = get_flashed_messages(with_categories=true) %}
                     {% if messages %}
-                        <div class="my-4 space-y-2">
+                        <div class="mb-4">
                         {% for category, message in messages %}
-                            <div class="p-4 rounded-md bg-{{ 'red' if category == 'error' else 'green' }}-100 text-{{ 'red' if category == 'error' else 'green' }}-700">
-                                {{ message }}
+                            <div class="rounded-md p-4 {{ 'bg-red-100 border-red-400 text-red-700' if category == 'danger' else 'bg-green-100 border-green-400 text-green-700' if category == 'success' else 'bg-blue-100 border-blue-400 text-blue-700' }}" role="alert">
+                                <p class="font-bold"><strong>{{ category.title() }}</strong></p>
+                                <p>{{ message }}</p>
                             </div>
                         {% endfor %}
                         </div>
                     {% endif %}
                 {% endwith %}
 
-                <form action="{{ url_for('create_patient') }}" method="POST">
-                    <div class="space-y-6">
-                        <!-- Demographics -->
-                        <div class="card">
-                            <div class="card-header">
-                                <h3 class="card-title">Patient Demographics</h3>
-                            </div>
-                            <div class="card-content grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <div>
-                                    <label for="clinic_id" class="form-label">Clinic *</label>
-                                    <select name="clinic_id" id="clinic_id" class="form-select mt-1" required>
-                                        <option value="">Select a clinic...</option>
-                                        {% for id, name in clinics.items() %}
-                                        <option value="{{ id }}">{{ name }}</option>
-                                        {% endfor %}
-                                    </select>
-                                </div>
-                                <div>
-                                    <label for="mrn" class="form-label">MRN *</label>
-                                    <input type="text" name="mrn" id="mrn" class="form-input mt-1" placeholder="e.g., CLINIC-001" required>
-                                </div>
-                                <div class="md:col-span-2">
-                                    <label for="name" class="form-label">Full Name *</label>
-                                    <input type="text" name="name" id="name" class="form-input mt-1" placeholder="e.g., Jane Doe" required>
-                                </div>
-                                <div>
-                                    <label for="dob" class="form-label">Date of Birth</label>
-                                    <input type="date" name="dob" id="dob" class="form-input mt-1">
-                                </div>
-                                <div>
-                                    <label for="phone" class="form-label">Phone Number</label>
-                                    <input type="tel" name="phone" id="phone" class="form-input mt-1" placeholder="+1 (555) 123-4567">
-                                </div>
-                            </div>
-                        </div>
+                <form action="{{ url_for('create_patient') }}" method="POST" class="bg-white p-8 rounded-lg shadow space-y-8">
+                    
+                    <!-- Core Info -->
+                    <div class="border-b border-gray-900/10 pb-8">
+                        <!-- FIX: Moved Page Title from header to here -->
+                        <h2 class="text-base font-semibold leading-7 text-gray-900">Create New Patient</h2>
+                        <p class="mt-1 text-sm leading-6 text-gray-600">Use YYYY-MM-DD for dates.</p>
 
-                        <!-- Dynamic List Sections -->
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <!-- Medical Conditions -->
-                            <div class="card">
-                                <div class="card-header flex justify-between items-center">
-                                    <h3 class="card-title">Medical Conditions</h3>
-                                    <button type="button" onclick="addDynamicField('conditions-container', 'medical_condition', 'Condition')" class="btn-secondary-sm">Add</button>
-                                </div>
-                                <div class="card-content space-y-2" id="conditions-container">
-                                    <!-- Dynamic fields will be added here -->
-                                    <p class="text-xs text-gray-500">Click "Add" to add a new condition.</p>
-                                </div>
+                        <div class="mt-6 grid grid-cols-1 gap-x-6 gap-y-6 sm:grid-cols-6">
+                            <div class="sm:col-span-3">
+                                <label for="name" class="form-label">Full Name*</label>
+                                <input type="text" name="name" id="name" value="{{ patient.get('name', '') }}" class="form-input" required>
                             </div>
-
-                            <!-- Medications -->
-                            <div class="card">
-                                <div class="card-header flex justify-between items-center">
-                                    <h3 class="card-title">Medications</h3>
-                                    <button type="button" onclick="addDynamicField('medications-container', 'medication', 'Medication')" class="btn-secondary-sm">Add</button>
-                                </div>
-                                <div class="card-content space-y-2" id="medications-container">
-                                    <!-- Dynamic fields will be added here -->
-                                    <p class="text-xs text-gray-500">Click "Add" to add a new medication.</p>
-                                </div>
+                            <div class="sm:col-span-3">
+                                <label for="dob" class="form-label">Date of Birth* (YYYY-MM-DD)</label>
+                                <input type="text" name="dob" id="dob" value="{{ patient.get('dob', '') }}" class="form-input" placeholder="YYYY-MM-DD" required>
                             </div>
-
-                            <!-- Allergies -->
-                            <div class="card">
-                                <div class="card-header flex justify-between items-center">
-                                    <h3 class="card-title">Allergies</h3>
-                                    <button type="button" onclick="addDynamicField('allergies-container', 'allergy', 'Allergy')" class="btn-secondary-sm">Add</button>
-                                </div>
-                                <div class="card-content space-y-2" id="allergies-container">
-                                    <!-- Dynamic fields will be added here -->
-                                    <p class="text-xs text-gray-500">Click "Add" to add a new allergy.</p>
-                                </div>
+                            <div class="sm:col-span-3">
+                                <label for="mrn" class="form-label">MRN*</label>
+                                <input type="text" name="mrn" id="mrn" value="{{ patient.get('mrn', '') }}" class="form-input" required>
                             </div>
-
-                            <!-- Procedures History -->
-                            <div class="card">
-                                <div class="card-header flex justify-between items-center">
-                                    <h3 class="card-title">Procedures History</h3>
-                                    <button type="button" onclick="addDynamicField('procedures-container', 'procedure', 'Procedure')" class="btn-secondary-sm">Add</button>
-                                </div>
-                                <div class="card-content space-y-2" id="procedures-container">
-                                    <!-- Dynamic fields will be added here -->
-                                    <p class="text-xs text-gray-500">Click "Add" to add a new procedure.</p>
-                                </div>
+                            <div class="sm:col-span-3">
+                                <label for="clinic_id" class="form-label">Clinic*</label>
+                                <select id="clinic_id" name="clinic_id" class="form-select" required>
+                                    <option value="">Select a clinic</option>
+                                    {% for clinic in clinics %}
+                                    <option value="{{ clinic.id }}" {% if clinic.id == patient.get('clinic_id', '') %}selected{% endif %}>{{ clinic.name }}</option>
+                                    {% endfor %}
+                                </select>
                             </div>
-                        </div>
-
-                        <!-- Encounters -->
-                        <div class="card">
-                            <div class="card-header flex justify-between items-center">
-                                <h3 class="card-title">Encounters</h3>
-                                <button type="button" onclick="addEncounterField()" class="btn-secondary-sm">Add Encounter</button>
+                            <div class="sm:col-span-6">
+                                <label for="phone" class="form-label">Phone Number</label>
+                                <input type="tel" name="phone" id="phone" value="{{ patient.get('phone', '') }}" class="form-input" placeholder="+1 (555) 123-4567">
                             </div>
-                            <div class="card-content space-y-3" id="encounters-container">
-                                <!-- Dynamic encounters will be added here -->
-                                <p class="text-xs text-gray-500">Click "Add Encounter" to add a new entry.</p>
-                            </div>
-                        </div>
-
-                        <!-- Submit Button -->
-                        <div class="flex justify-end pt-4">
-                            <a href="{{ url_for('dashboard') }}" class="btn btn-secondary mr-3">Cancel</a>
-                            <button type="submit" class="btn btn-primary">Create Patient</button>
                         </div>
                     </div>
+
+                    <!-- Dynamic List Fields -->
+                    {% set list_fields = [
+                        ('medications', 'Medications'),
+                        ('allergies', 'Allergies'),
+                        ('medical_conditions', 'Medical Conditions'),
+                        ('procedures_history', 'Procedures History')
+                    ] %}
+                    
+                    {% for name, title in list_fields %}
+                    <div class="border-b border-gray-900/10 pb-8">
+                        <div class="flex justify-between items-center">
+                            <h2 class="text-base font-semibold leading-7 text-gray-900">{{ title }}</h2>
+                            <button type="button" class="btn btn-secondary btn-sm !py-1 !px-2" onclick="addDynamicItem('{{ name }}')">Add</button>
+                        </div>
+                        <div id="{{ name }}-list" class="mt-4 space-y-2">
+                            {% for item in patient.get(name, []) %}
+                            <div class="flex items-center gap-x-4">
+                                <input type="text" name="{{ name }}[]" value="{{ item }}" class="form-input">
+                                <button type="button" class="btn btn-danger btn-sm !py-1 !px-2" onclick="removeItem(this)">Remove</button>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                    
+                    <!-- Encounters -->
+                    <div class="border-b border-gray-900/10 pb-8">
+                        <div class="flex justify-between items-center">
+                            <h2 class="text-base font-semibold leading-7 text-gray-900">Encounters</h2>
+                            <button type="button" class="btn btn-secondary btn-sm !py-1 !px-2" onclick="addEncounterItem()">Add Encounter</button>
+                        </div>
+                        <div id="encounters-list" class="mt-4 space-y-4">
+                            {% for date, encounter in patient.get('encounters', {}).items() %}
+                            <div class="encounter-item grid grid-cols-1 sm:grid-cols-5 gap-x-4 gap-y-2 p-4 border rounded-md relative">
+                                <button type="button" class="btn btn-danger btn-sm !py-1 !px-2 absolute -top-2 -right-2" onclick="removeItem(this.parentElement)">X</button>
+                                <div class="sm:col-span-2">
+                                    <label class="form-label">Date (YYYY-MM-DD)</label>
+                                    <input type="text" name="encounter_date[]" value="{{ date }}" class="form-input" placeholder="YYYY-MM-DD">
+                                </div>
+                                <div class="sm:col-span-3">
+                                    <label class="form-label">Type</label>
+                                    <input type="text" name="encounter_type[]" value="{{ encounter.type }}" class="form-input">
+                                </div>
+                                <div class="sm:col-span-2">
+                                    <label class="form-label">Status</label>
+                                    <select name="encounter_status[]" class="form-select">
+                                        <option value="scheduled" {% if encounter.status == 'scheduled' %}selected{% endif %}>Scheduled</option>
+                                        <option value="completed" {% if encounter.status == 'completed' %}selected{% endif %}>Completed</option>
+                                        <option value="signed" {% if encounter.status == 'signed' %}selected{% endif %}>Signed</option>
+                                        <option value="cancelled" {% if encounter.status == 'cancelled' %}selected{% endif %}>Cancelled</option>
+                                    </select>
+                                </div>
+                                <div class="sm:col-span-3">
+                                    <label class="form-label">Purpose</label>
+                                    <input type="text" name="encounter_purpose[]" value="{{ encounter.purpose }}" class="form-input">
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+
+                    <!-- Form Actions -->
+                    <div class="mt-6 flex items-center justify-end gap-x-6">
+                        <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Cancel</a>
+                        <button type="submit" class="btn btn-primary">Save Patient</button>
+                    </div>
                 </form>
-            </main>
-        </div>
+
+            </div>
+        </main>
     </div>
 
     <script>
-        function addDynamicField(containerId, inputName, placeholder) {
-            // Find the container
-            const container = document.getElementById(containerId);
-            
-            // Remove the placeholder text if it exists
-            const p = container.querySelector('p');
-            if (p) p.remove();
-
-            // Create new elements
-            const div = document.createElement('div');
-            div.className = 'flex items-center space-x-2';
-            
-            const input = document.createElement('input');
-            input.type = 'text';
-            input.name = inputName;
-            input.className = 'form-input flex-grow';
-            input.placeholder = `e.g., ${placeholder}`;
-            
-            const button = document.createElement('button');
-            button.type = 'button';
-            button.className = 'btn-danger-sm';
-            button.textContent = 'Remove';
-            button.onclick = function() {
-                removeField(this);
-            };
-            
-            // Append elements
-            div.appendChild(input);
-            div.appendChild(button);
-            container.appendChild(div);
-            input.focus();
+        function addDynamicItem(listName) {
+            const list = document.getElementById(listName + '-list');
+            const newItem = document.createElement('div');
+            newItem.className = 'flex items-center gap-x-4';
+            newItem.innerHTML = `
+                <input type="text" name="${listName}[]" class="form-input" placeholder="New entry...">
+                <button type="button" class="btn btn-danger btn-sm !py-1 !px-2" onclick="removeItem(this)">Remove</button>
+            `;
+            list.appendChild(newItem);
         }
 
-        function removeField(button) {
-            button.parentElement.remove();
-        }
-
-        function addEncounterField() {
-            // Find the container
-            const container = document.getElementById('encounters-container');
-            
-            // Remove the placeholder text if it exists
-            const p = container.querySelector('p');
-            if (p) p.remove();
-
-            // Create new elements
-            const div = document.createElement('div');
-            div.className = 'p-3 border rounded-lg mb-3 space-y-2 bg-gray-50';
-            div.innerHTML = `
-                <div class="flex justify-between items-center">
-                    <label class="block text-sm font-medium text-gray-700">New Encounter</label>
-                    <button type="button" onclick="removeField(this)" class="btn-danger-sm">Remove</button>
+        function addEncounterItem() {
+            const list = document.getElementById('encounters-list');
+            const newItem = document.createElement('div');
+            newItem.className = 'encounter-item grid grid-cols-1 sm:grid-cols-5 gap-x-4 gap-y-2 p-4 border rounded-md relative';
+            newItem.innerHTML = `
+                <button type="button" class="btn btn-danger btn-sm !py-1 !px-2 absolute -top-2 -right-2" onclick="removeItem(this.parentElement)">X</button>
+                <div class="sm:col-span-2">
+                    <label class="form-label">Date (YYYY-MM-DD)</label>
+                    <input type="text" name="encounter_date[]" class="form-input" placeholder="YYYY-MM-DD">
                 </div>
-                <div class="grid grid-cols-2 gap-4">
-                    <div>
-                        <label class="form-label text-xs">Date</label>
-                        <input type="date" name="encounter_date" class="form-input">
-                    </div>
-                    <div>
-                        <label class="form-label text-xs">Status</label>
-                        <select name="encounter_status" class="form-input">
-                            <option value="scheduled">Scheduled</option>
-                            <option value="signed">Signed</option>
-                            <option value="cancelled">Cancelled</option>
-                        </select>
-                    </div>
+                <div class="sm:col-span-3">
+                    <label class="form-label">Type</label>
+                    <input type="text" name="encounter_type[]" class="form-input" placeholder="e.g., AI phone call">
                 </div>
-                <div>
-                    <label class="form-label text-xs">Type</label>
-                    <input type="text" name="encounter_type" class="form-input" placeholder="e.g., Annual Physical">
+                <div class="sm:col-span-2">
+                    <label class="form-label">Status</label>
+                    <select name="encounter_status[]" class="form-select">
+                        <option value="scheduled">Scheduled</option>
+                        <option value="completed">Completed</option>
+                        <option value="signed">Signed</option>
+                        <option value="cancelled">Cancelled</option>
+                    </select>
                 </div>
-                <div>
-                    <label class="form-label text-xs">Purpose</label>
-                    <input type="text" name="encounter_purpose" class="form-input" placeholder="e.g., Routine Check-up">
+                <div class="sm:col-span-3">
+                    <label class="form-label">Purpose</label>
+                    <input type="text" name="encounter_purpose[]" class="form-input" placeholder="e.g., Medication adherence">
                 </div>
             `;
-            container.appendChild(div);
+            list.appendChild(newItem);
+        }
+
+        function removeItem(button) {
+            button.parentElement.remove();
         }
     </script>
 </body>

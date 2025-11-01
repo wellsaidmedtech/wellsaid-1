@@ -23,20 +23,24 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY", "a_very_secret_development_k
 
 # Initialize Firebase
 try:
+    # This is the official env variable the Firebase Admin SDK looks for.
     cred_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    
     if not cred_path:
-        logging.warning("GOOGLE_APPLICATION_CREDENTIALS not set in .env. Using default.")
-        # This will fail if not in a GCP env, but it's the standard fallback.
-        cred = credentials.ApplicationDefault()
-        firebase_admin.initialize_app()
+        logging.warning("GOOGLE_APPLICATION_CREDENTIALS env variable not set. Using 'firebase-key.json' as default.")
+        # Set a default path if not provided, common for local dev
+        cred_path = "firebase-key.json"
+        
+    if not os.path.exists(cred_path):
+        logging.error(f"Firebase credentials file not found at: {cred_path}. Please ensure 'firebase-key.json' is in the root directory.")
+        db = None
     else:
-        # This is our local/Render path
         logging.info(f"Initializing Firebase with key: {cred_path}")
         cred = credentials.Certificate(cred_path)
         firebase_admin.initialize_app(cred)
-    
-    db = firestore.client()
-    logging.info("Firebase Firestore client initialized successfully.")
+        db = firestore.client()
+        logging.info("Firebase Firestore client initialized successfully.")
+        
 except Exception as e:
     logging.error(f"CRITICAL: Failed to initialize Firebase. App will not run. Error: {e}", exc_info=True)
     db = None # Ensure db is None if init fails
@@ -77,8 +81,13 @@ def find_next_action(patient):
     """Finds the soonest scheduled action for a patient."""
     next_action = {'date': '9999-99-99', 'purpose': 'N/A'}
     if 'encounters' in patient and patient['encounters']:
+        today = datetime.now().strftime('%Y-%m-%d')
         for date, enc in patient['encounters'].items():
-            if enc and enc.get('status') == 'scheduled' and date < next_action['date']:
+            # Check if encounter is valid, scheduled, on or after today, and sooner than the current next_action
+            if (enc and isinstance(enc, dict) and 
+                enc.get('status') == 'scheduled' and 
+                date >= today and 
+                date < next_action['date']):
                 next_action = {'date': date, 'purpose': enc.get('purpose', 'N/A')}
     
     if next_action['date'] == '9999-99-99':
@@ -90,28 +99,28 @@ def validate_patient_form(form_data):
     Validates the form data for creating/editing a patient.
     Returns (is_valid, error_message)
     """
-    # Regex for MM/DD/YYYY
-    dob_regex = r'^(0[1-9]|1[0-2])\/(0[1-9]|[12]\d|3[01])\/(19|20)\d{2}$'
+    # Regex for YYYY-MM-DD (more standard)
+    dob_regex = r'^(19|20)\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$'
     # Simple North American phone regex (basic)
     phone_regex = r'^\+?1?\s*\(?([2-9][0-8][0-9])\)?\s*-?([2-9][0-9]{2})\s*-?([0-9]{4})$'
-    # Simple text validation (no numbers or special chars)
-    text_field_regex = r'^[a-zA-Z\s,-]+$'
+    # Simple text validation (allows letters, numbers, spaces, hyphens, commas, periods)
+    text_field_regex = r'^[a-zA-Z0-9\s,-.]+$'
 
     if not all([form_data.get('name'), form_data.get('mrn'), form_data.get('clinic_id'), form_data.get('dob')]):
         return False, "Name, MRN, Clinic, and DOB are all required fields."
 
     if not re.match(dob_regex, form_data.get('dob', '')):
-        return False, "Date of Birth must be in MM/DD/YYYY format."
+        return False, "Date of Birth must be in YYYY-MM-DD format."
     
     if form_data.get('phone') and not re.match(phone_regex, form_data.get('phone', '')):
-        return False, "Phone number format is not valid."
+        return False, "Phone number format is not valid. (e.g., +1 (555) 123-4567)"
 
     # Validate dynamic fields to prevent nonsense data
     list_fields_to_check = ['medications', 'allergies', 'medical_conditions', 'procedures_history']
     for field_name in list_fields_to_check:
         for item in form_data.getlist(field_name + '[]'):
             if item and not re.match(text_field_regex, item):
-                return False, f"Invalid entry in {field_name.replace('_', ' ').title()}: '{item}'. Only text, spaces, and commas are allowed."
+                return False, f"Invalid entry in {field_name.replace('_', ' ').title()}: '{item}'. Only letters, numbers, spaces, and hyphens are allowed."
 
     return True, ""
 
@@ -135,18 +144,20 @@ def dashboard():
         patients_list = []
         
         # Base query
+        clinic_refs = []
         if clinic_id_filter:
             # Filter by a specific clinic
-            patient_collection_refs = [db.collection('clinics').document(clinic_id_filter).collection('patients')]
+            clinic_refs = [db.collection('clinics').document(clinic_id_filter)]
         else:
             # Get all clinics
-            patient_collection_refs = [clinic.collection('patients') for clinic in db.collection('clinics').stream()]
+            clinic_refs = db.collection('clinics').stream()
 
-        for patient_ref in patient_collection_refs:
-            for doc in patient_ref.stream():
+        for clinic in clinic_refs:
+            patient_collection_ref = clinic.reference.collection('patients')
+            for doc in patient_collection_ref.stream():
                 patient_data = doc.to_dict()
                 patient_data['mrn'] = doc.id
-                patient_data['clinic_id'] = patient_ref.parent.id
+                patient_data['clinic_id'] = clinic.id
                 
                 # Apply name filter
                 if patient_name_filter and patient_name_filter not in patient_data.get('name', '').lower():
@@ -279,8 +290,8 @@ def create_patient():
                 'name': form_data['name'].strip(),
                 'dob': form_data['dob'].strip(),
                 'phone': form_data['phone'].strip(),
-                'clinic_id': clinic_id,
-                'mrn': mrn,
+                'clinic_id': clinic_id, # Storing clinic_id for reference
+                'mrn': mrn, # Storing mrn for reference
                 # Process dynamic list fields (filter out empty strings)
                 'medications': list(filter(None, form_data.getlist('medications[]'))),
                 'allergies': list(filter(None, form_data.getlist('allergies[]'))),
@@ -376,7 +387,7 @@ def edit_patient(clinic_id, mrn):
                     }
 
             # --- Handle Clinic/MRN Change ---
-            # This is complex: if clinic_id or MRN changed, we must delete the old doc and create a new one.
+            # if clinic_id or MRN changed, we must delete the old doc and create a new one.
             if clinic_id != form_data['clinic_id'] or mrn != form_data['mrn']:
                 # New reference
                 new_clinic_id = form_data['clinic_id']
@@ -405,7 +416,10 @@ def edit_patient(clinic_id, mrn):
             logging.error(f"Error updating patient {clinic_id}/{mrn}: {e}", exc_info=True)
             flash(f"An error occurred while updating the patient: {e}", "danger")
             # Pass form data back to template to re-populate
-            return render_template('edit_patient.html', clinics=get_all_clinics(), patient=request.form)
+            patient_data = request.form.to_dict(flat=False) # Get form data as dict
+            patient_data['mrn'] = mrn # Add identifiers back
+            patient_data['clinic_id'] = clinic_id
+            return render_template('edit_patient.html', clinics=get_all_clinics(), patient=patient_data)
 
     # GET request: Show the pre-filled form
     try:
@@ -439,9 +453,8 @@ def admin_prompts():
     if request.method == 'POST':
         try:
             for key, value in request.form.items():
-                if key.startswith('prompt_'):
-                    doc_id = key.replace('prompt_', '')
-                    prompt_ref.document(doc_id).update({'content': value})
+                # We expect keys like 'prompt_identity', 'prompt_rules', etc.
+                prompt_ref.document(key).update({'content': value})
             flash("Prompts updated successfully!", "success")
         except Exception as e:
             logging.error(f"Error updating prompts: {e}", exc_info=True)
@@ -459,7 +472,7 @@ def admin_prompts():
         core_prompts = ['prompt_identity', 'prompt_rules', 'kb_medication_adherence', 'kb_post_op_checkin']
         for p in core_prompts:
             if p not in prompts:
-                prompts[p] = "" # Create an empty one if it doesn't exist
+                prompts[p] = f"WARNING: Prompt '{p}' not found in Firestore. Please create it."
                 
         return render_template('admin_prompts.html', prompts=prompts)
     except Exception as e:
@@ -471,8 +484,9 @@ def admin_prompts():
 # --- 6. Run Application ---
 
 if __name__ == '__main__':
-    if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
-        logging.warning("GOOGLE_APPLICATION_CREDENTIALS env variable not set. Using 'firebase-key.json' as default.")
+    # This check ensures we're using the local key file for local dev
+    if "GOOGLE_APPLICATION_CREDENTIALS" not in os.environ:
+        logging.info("Setting default GOOGLE_APPLICATION_CREDENTIALS to 'firebase-key.json' for local dev.")
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "firebase-key.json"
         
     app.run(host='127.0.0.1', port=8080, debug=True)
