@@ -126,6 +126,7 @@ def get_connection_details(call_sid):
         details_json_string = active_connections_local.get(call_sid)
         
     if not details_json_string:
+        # NOTE: This log line is critical
         logging.error(f"No connection details found for CallSid {call_sid} in Redis/cache.")
         return None
         
@@ -307,16 +308,19 @@ class EviHandler:
                     # This is audio from Twilio. Send it to Hume.
                     payload_b64 = message_json['media']['payload']
                     audio_bytes = base64.b64decode(payload_b64)
-                    await self.hume_socket.send_bytes(audio_bytes)
+                    
+                    # --- FIX: Changed 'send_bytes' to 'send_audio_bytes' ---
+                    await self.hume_socket.send_audio_bytes(audio_bytes)
+                    
                 elif message_json['event'] == 'stop':
                     logging.info(f"Received 'stop' message from Twilio for {self.call_sid}")
-                    await self.hume_socket.close() # This will trigger on_close
+                    # --- FIX: Removed manual '.close()'. The 'async with' block handles this. ---
                     break
         except WebSocketDisconnect:
             logging.info(f"Twilio WebSocket disconnected (media stream) for {self.call_sid}")
         except Exception as e:
             logging.error(f"Error in Twilio audio stream for {self.call_sid}: {e}", exc_info=True)
-            await self.hume_socket.close() # Ensure Hume socket closes on error
+            # --- FIX: Removed manual '.close()'. The 'async with' block handles this. ---
 
 
 @app.websocket("/twilio/media/{call_sid}")
@@ -478,6 +482,12 @@ async def handle_incoming_call(request: Request):
         response = VoiceResponse() # Create a fresh response for the error
         response.say("An application error occurred. Please try again later.")
         return Response(content=response.to_xml(), media_type="text/xml")
+
+# --- FIX: Added root route to handle health checks and fix 404s ---
+@app.get("/")
+def root():
+    """Root path for Render health checks."""
+    return {"status": "ok", "message": "WellSaid AI Call App is running."}
 
 @app.get("/wake-up")
 def wake_up():
