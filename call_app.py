@@ -11,6 +11,8 @@ import io
 import random
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, JSONResponse
+from hume import HumeStreamClient
+from hume.models.config import LanguageConfig
 from twilio.twiml.voice_response import VoiceResponse, Connect
 from twilio.rest import Client as TwilioRestClient
 from twilio.base.exceptions import TwilioRestException
@@ -235,6 +237,7 @@ async def root():
 class StartCallRequest(BaseModel):
     mrn: str
 
+# --- Start Call ---
 @app.post("/api/start_call")
 async def start_outbound_call(call_request: StartCallRequest):
     mrn = call_request.mrn
@@ -283,133 +286,341 @@ async def start_outbound_call(call_request: StartCallRequest):
         log.error(f"Unexpected error initiating outbound call to {patient_number}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error initiating call.")
 
-# --- Twilio Webhook (Handles Outbound-Answered Calls) ---
-@app.post("/twilio/incoming_call")
-async def handle_incoming_call(request: Request):
-    log.info("-" * 30)
-    log.info("Twilio Call Webhook Received (Outbound-Answered)")
-    call_sid = None 
+def generate_system_prompt(patient_data, clinic_name):
+    """
+    Generates a dynamic system prompt for the Hume EVI based on the patient's
+    scheduled encounters and medical data.
+    """
     
-    try:
-        form_data = await request.form()
-        call_sid = form_data.get('CallSid')
-        from_number = form_data.get('From')
-        mrn = request.query_params.get('mrn')
+    # Default prompt if no specific action is found
+    prompt = f"You are a friendly and caring AI medical assistant from {clinic_name}. You are calling {patient_data['name']}. Start by introducing yourself and asking how they are doing today."
+    
+    # Look for a scheduled AI phone call
+    scheduled_ai_call = None
+    if 'encounters' in patient_data and patient_data['encounters']:
+        for date, encounter in patient_data['encounters'].items():
+            if (encounter.get('status') == 'scheduled' and 
+                encounter.get('type') == 'AI phone call'):
+                scheduled_ai_call = encounter
+                break # Found the first scheduled call
 
-        if not call_sid or not mrn:
-             log.error(f"Missing CallSid or MRN in request. CallSid: {call_sid}, MRN: {mrn}")
-             response = VoiceResponse(); response.say("System configuration error."); response.hangup()
-             return Response(content=str(response), media_type="text/xml", status_code=200)
-
-        log.info(f"CallSid: {call_sid}, Patient Number: {from_number}, MRN from URL: {mrn}")
-
-        # --- 1. Identify Patient (using Firestore MRN lookup) ---
-        patient_data = get_patient_info_by_mrn(mrn)
-        if not patient_data:
-            log.error(f"Could not find patient for MRN {mrn} provided in webhook URL. CallSid: {call_sid}")
-            response = VoiceResponse(); response.say("System error: Could not retrieve patient records.", voice='alice'); response.hangup()
-            return Response(content=str(response), media_type="text/xml", status_code=200)
-
-        log.info(f"Identified Patient: {patient_data.get('name', 'N/A')} (MRN: {mrn})")
+    if scheduled_ai_call:
+        purpose = scheduled_ai_call.get('purpose', '').lower()
+        patient_name = patient_data.get('name', 'the patient')
         
-        # Store the MRN in the active connection for the tool call later
-        patient_mrn = patient_data.get("mrn") 
+        if "medication adherence" in purpose:
+            meds = ", ".join(patient_data.get('medications', []))
+            if not meds:
+                meds = "your new medications"
+            prompt = (
+                f"You are a friendly, caring AI medical assistant from {clinic_name}. "
+                f"You are calling {patient_name} for a medication adherence check-in. "
+                f"Your goal is to: "
+                f"1. Introduce yourself and confirm you're speaking with {patient_name}. "
+                f"2. Gently ask if they have been able to take their medications, specifically {meds}, as prescribed. "
+                f"3. Ask if they are experiencing any side effects or have any questions about them. "
+                f"4. If they have questions you can't answer, tell them you'll note it for their doctor. "
+                f"5. Conclude the call warmly."
+            )
 
-        # --- 2. Connect to Hume EVI ---
-        if not all([HUME_API_KEY, HUME_EVI_WS_URI, HUME_CONFIG_ID]):
-            log.error(f"Hume configuration missing. Cannot connect. CallSid: {call_sid}")
-            response = VoiceResponse(); response.say("AI service configuration error."); response.hangup()
-            return Response(content=str(response), media_type="text/xml", status_code=200)
+        elif "post-op check-in" in purpose:
+            procedures = ", ".join(patient_data.get('procedures_history', []))
+            if not procedures:
+                procedures = "your recent procedure"
+            prompt = (
+                f"You are a caring AI nurse from {clinic_name}. "
+                f"You are calling {patient_name} for a post-operative check-in regarding their {procedures}. "
+                f"Your goal is to: "
+                f"1. Introduce yourself and confirm you're speaking with {patient_name}. "
+                f"2. Ask how they are feeling and recovering. "
+                f"3. Specifically ask about their pain level (e.g., on a scale of 1-10). "
+                f"4. Ask if they've noticed any signs of infection, like fever or redness at the incision site. "
+                f"5. Remind them of any key post-op instructions if you have them. "
+                f"6. Conclude the call, advising them to call the office if their symptoms worsen."
+            )
+        
+        elif "appointment reminder" in purpose:
+            # Note: This would be even better if we found the *next* scheduled appt
+            prompt = (
+                f"You are a helpful AI administrative assistant from {clinic_name}. "
+                f"You are calling {patient_name} to remind them of an upcoming appointment. "
+                f"Your goal is to: "
+                f"1. Introduce yourself and confirm you're speaking with {patient_name}. "
+                f"2. Remind them of their upcoming appointment (you can ask them to confirm the date and time if it's not specified). "
+                f"3. Ask if they have any questions before their visit. "
+                f"4. Conclude the call."
+            )
             
-        uri_with_key_and_config = (
-            f"{HUME_EVI_WS_URI}?apiKey={HUME_API_KEY}"
-            f"&config_id={HUME_CONFIG_ID}"
-            f"&verbose_transcription=true"
-        )
-        log.info(f"Connecting to Hume EVI WebSocket... CallSid: {call_sid}")
+        else:
+            # Fallback for other scheduled AI calls
+            prompt = (
+                f"You are a friendly AI medical assistant from {clinic_name}. "
+                f"You are calling {patient_name} for a scheduled health check-in. "
+                f"The purpose of the call is: {scheduled_ai_call.get('purpose', 'a general check-in')}. "
+                f"Please begin the conversation, introduce yourself, and ask how they are doing."
+            )
+
+    logging.info(f"Generated system prompt: {prompt[:100]}...") # Log first 100 chars
+    return prompt
+
+
+async def save_call_results_to_firestore(patient_data, call_sid, transcript):
+    """
+    Saves the call results back to the patient's record in Firestore.
+    Finds the first "scheduled" AI phone call and updates it.
+    """
+    try:
+        logging.info(f"Attempting to save call results for CallSid: {call_sid}")
         
-        try:
-             hume_websocket = await websockets.connect(uri_with_key_and_config)
-        except websockets.exceptions.WebSocketException as e:
-             log.error(f"Failed to connect to Hume EVI WebSocket: {e}. CallSid: {call_sid}", exc_info=True)
-             response = VoiceResponse(); response.say("Could not connect to the AI service."); response.hangup()
-             return Response(content=str(response), media_type="text/xml", status_code=200)
+        # Find the first "scheduled" AI phone call to update
+        encounter_to_update_date = None
+        if 'encounters' in patient_data and patient_data['encounters']:
+            scheduled_calls = []
+            for date_str, encounter in patient_data['encounters'].items():
+                if (encounter.get('status') == 'scheduled' and 
+                    encounter.get('type') == 'AI phone call'):
+                    scheduled_calls.append(date_str)
+            
+            if scheduled_calls:
+                scheduled_calls.sort() # Sort by date to find the earliest one
+                encounter_to_update_date = scheduled_calls[0]
+        
+        if not encounter_to_update_date:
+            logging.warning(f"No scheduled AI phone call found for MRN {patient_data['mrn']}. Creating new encounter.")
+            # If no scheduled call, create a new encounter entry
+            encounter_to_update_date = datetime.now().strftime("%Y-%m-%d-%H%M%S") # Unique key
+            base_encounter = {
+                "type": "AI phone call (unscheduled)",
+                "purpose": "General check-in"
+            }
+        else:
+            base_encounter = patient_data['encounters'][encounter_to_update_date]
 
-        log.info(f"WebSocket connection to Hume EVI established. CallSid: {call_sid}")
-
-        active_connections[call_sid] = {
-            "hume_ws": hume_websocket,
-            "twilio_ws": None,
-            "stream_sid": None,
-            "resample_state": None,
-            "transcript": [],
-            "is_interrupted": False,
-            "patient_mrn": patient_mrn # <-- Store MRN for use in listen_to_hume
+        # Prepare the update data
+        # We use "dot notation" to update nested fields in a Firestore document
+        update_path_prefix = f"encounters.{encounter_to_update_date}"
+        update_data = {
+            f"{update_path_prefix}.status": "completed",
+            f"{update_path_prefix}.call_sid": call_sid,
+            f"{update_path_prefix}.call_transcript": json.dumps(transcript), # Store transcript as a JSON string
+            f"{update_path_prefix}.call_completed_at": datetime.now().isoformat()
         }
 
-        # --- 3. Send Initial Settings (with VARIABLES and TOOL) ---
-        conditions_list = ", ".join(patient_data.get('medical_conditions', ['N/A']))
-        medications_list = ", ".join(patient_data.get('current_medications', ['N/A']))
-        
-        tool_params_schema = {
-            "type": "object",
-            "properties": {
-                "summary": { "type": "string", "description": "Summary of patient concern and call outcome."},
-                "action_statement": { "type": "string", "description": "Final action: EMERGENCY_911, REFILL_REQUEST, NOTE_FOR_REVIEW, or VERIFICATION_FAILED."}
-            },
-            "required": ["summary", "action_statement"]
-        }
+        # Get the document reference and apply the update
+        patient_ref = db.collection('clinics').document(patient_data['clinic_id']).collection('patients').document(patient_data['mrn'])
+        await asyncio.to_thread(patient_ref.update, update_data) # Run blocking DB call in a thread
 
-        initial_message = {
-            "type": "session_settings",
-            "variables": {
-                "patient_name": patient_data.get('name', 'the patient'),
-                "dob": patient_data.get('date_of_birth', 'N/A'),
-                "age": str(patient_data.get('age', 'N/A')),
-                "gender": patient_data.get('gender', 'N/A'),
-                "conditions": conditions_list,
-                "medications": medications_list,
-                "last_visit": patient_data.get('most_recent_visit', 'N/A'),
-                "call_purpose": patient_data.get('purpose_of_call', 'a routine check-in')
-            },
-            "audio": { "encoding": "linear16", "sample_rate": 8000, "channels": 1 },
-            "voice": { "id": "97fe9008-8584-4d56-8453-bd8c7ead3663", "provider": "HUME_AI" },
-            "evi_version": "3",
-            "tools": [{
-                "type": "function", "name": "end_call_triage",
-                "description": "Summarize call and log final action.",
-                "parameters": json.dumps(tool_params_schema)
-            }]
-        }
-        
-        try:
-            await hume_websocket.send(json.dumps(initial_message))
-            log.info(f"Sent session_settings to Hume EVI. CallSid: {call_sid}")
-        except websockets.exceptions.ConnectionClosed as e:
-             log.error(f"Hume WS closed unexpectedly after connect, before sending settings: {e}. CallSid: {call_sid}", exc_info=True)
-             await cleanup_connection(call_sid, "Hume WS closed early")
-             response = VoiceResponse(); response.say("AI connection lost early."); response.hangup()
-             return Response(content=str(response), media_type="text/xml", status_code=200)
-
-        asyncio.create_task(listen_to_hume(call_sid))
+        logging.info(f"Successfully saved call results for MRN {patient_data['mrn']} to encounter {encounter_to_update_date}")
 
     except Exception as e:
-        log.error(f"Unexpected error in handle_incoming_call for CallSid {call_sid}: {e}", exc_info=True)
-        await cleanup_connection(call_sid, "Incoming call setup failed")
-        response = VoiceResponse(); response.say("An unexpected server error occurred during setup."); response.hangup()
-        return Response(content=str(response), media_type="text/xml", status_code=200)
+        logging.error(f"Error in save_call_results_to_firestore for CallSid {call_sid}: {e}", exc_info=True)
 
-    # --- 4. Respond to Twilio with TwiML to start <Stream> ---
-    response = VoiceResponse()
-    connect = Connect()
-    stream_url = f"wss://{RENDER_APP_HOSTNAME}/twilio/audiostream/{call_sid}"
-    log.info(f"Telling Twilio to stream audio to: {stream_url}. CallSid: {call_sid}")
-    connect.stream(url=stream_url)
-    response.append(connect)
-    response.pause(length=120)
-    log.info(f"Responding to Twilio with TwiML <Connect><Stream>. CallSid: {call_sid}")
-    return Response(content=str(response), media_type="text/xml", status_code=200)
 
+@app.post("/twilio/incoming_call")
+async def handle_incoming_call(request: Request, CallSid: str = Form(None)):
+    """
+    Handles incoming Twilio calls (both direct calls and click-to-call transfers).
+    This function now generates a dynamic system prompt for Hume EVI.
+    """
+    logging.info(f"Twilio Call Webhook Received (CallSid: {CallSid})")
+    
+    try:
+        # Check if this call is from our web app (click-to-call)
+        # We get the MRN and ClinicID from the query params in the URL
+        mrn = request.query_params.get('mrn')
+        clinic_id = request.query_params.get('clinic_id')
+
+        if not CallSid:
+            logging.warning("Request missing CallSid.")
+            CallSid = "UnknownCallSid" # Create a placeholder for logging
+
+        if not mrn or not clinic_id:
+            logging.error(f"Missing CallSid, MRN, or ClinicID in request. CallSid: {CallSid}, MRN: {mrn}, ClinicID: {clinic_id}")
+            # This handles direct, unsolicited calls to the Twilio number
+            # We can't look up a patient, so we give a generic response.
+            response = VoiceResponse()
+            response.say("Thank you for calling. This is an automated health service. We are unable to identify your patient record. Please contact your clinic directly. Goodbye.")
+            response.hangup()
+            return PlainTextResponse(str(response), media_type='application/xml')
+
+        logging.info(f"Looking up patient for MRN: {mrn} in Clinic: {clinic_id}")
+
+        # Get patient data from Firestore
+        patient_ref = db.collection('clinics').document(clinic_id).collection('patients').document(mrn)
+        patient_doc = patient_ref.get()
+
+        if not patient_doc.exists:
+            logging.error(f"Could not find patient for MRN {mrn} provided in webhook URL. CallSid: {CallSid}")
+            response = VoiceResponse()
+            response.say("We're sorry, we could not retrieve the patient records for this call. An application error occurred.")
+            response.hangup()
+            return PlainTextResponse(str(response), media_type='application/xml')
+
+        patient_data = patient_doc.to_dict()
+        patient_data['mrn'] = mrn # Add MRN to the dict
+        patient_data['clinic_id'] = clinic_id # Add clinic_id
+        
+        # Get clinic name for the prompt
+        clinic_info = db.collection('clinics').document(clinic_id).get()
+        clinic_name = clinic_info.to_dict().get('name', 'your clinic')
+
+        # --- NEW LOGIC ---
+        # Generate a dynamic system prompt based on the patient's data
+        system_prompt = generate_system_prompt(patient_data, clinic_name)
+        # --- END NEW LOGIC ---
+
+        # Start the WebSocket stream to Hume EVI
+        try:
+            logging.info(f"Connecting to Hume EVI for CallSid: {CallSid}")
+            
+            # Use the new dynamic system_prompt
+            config = LanguageConfig(system_prompt=system_prompt)
+            client = HumeStreamClient(os.environ.get("HUME_API_KEY"), config=config)
+            
+            # Start the EVI conversation
+            # Note: We are not awaiting this, it runs in the background
+            asyncio.create_task(
+                start_hume_evi_conversation(client, CallSid, patient_data)
+            )
+
+        except Exception as e:
+            logging.error(f"Error starting Hume EVI connection for CallSid {CallSid}: {e}", exc_info=True)
+            response = VoiceResponse()
+            response.say("We're sorry, but we're unable to connect to our AI assistant at this time.")
+            response.hangup()
+            return PlainTextResponse(str(response), media_type='application/xml')
+        
+        # Connect Twilio to our WebSocket server
+        response = VoiceResponse()
+        start = Start()
+        start.stream(url=f"wss://{request.headers['host']}/ws/{CallSid}")
+        response.append(start)
+        response.pause(length=60) # Keep call alive for 60s
+        
+        logging.info(f"Twilio TwiML response sent for CallSid: {CallSid}")
+        return PlainTextResponse(str(response), media_type='application/xml')
+
+    except Exception as e:
+        logging.error(f"Unexpected error in handle_incoming_call for CallSid {CallSid}: {e}", exc_info=True)
+        response = VoiceResponse()
+        response.say("An application error occurred. We apologize for the inconvenience.")
+        response.hangup()
+        return PlainTextResponse(str(response), media_type='application/xml')
+
+async def start_hume_evi_conversation(client: HumeStreamClient, call_sid: str, patient_data: dict):
+    """
+    Handles the Hume EVI conversation for a given CallSid.
+    Now captures the full transcript and saves it on disconnect.
+    """
+    full_transcript = [] # <-- NEW: List to store conversation
+    
+    try:
+        async with client.connect(send_json=True) as socket:
+            logging.info(f"Hume EVI WebSocket connected for CallSid: {call_sid}")
+            
+            # 1. Wait for the WebSocket connection from Twilio
+            websocket = active_connections.get(call_sid)
+            if not websocket:
+                logging.error(f"Twilio WebSocket not found in active_connections for CallSid: {call_sid}")
+                return
+
+            logging.info(f"Twilio WebSocket connected for CallSid: {call_sid}")
+
+            async def twilio_receiver():
+                """Receives audio from Twilio and sends it to Hume."""
+                while True:
+                    try:
+                        message = await websocket.receive_text()
+                        data = json.loads(message)
+                        
+                        if data['event'] == 'media':
+                            media = data['media']
+                            chunk = media['payload']
+                            await socket.send_json({
+                                "type": "audio_input",
+                                "data": chunk,
+                            })
+                        elif data['event'] == 'stop':
+                            logging.info(f"Twilio 'stop' message received for CallSid: {call_sid}")
+                            break
+                    except WebSocketDisconnect:
+                        logging.info(f"Twilio WebSocket disconnected (receiver) for CallSid: {call_sid}")
+                        break
+                    except Exception as e:
+                        logging.error(f"Error in twilio_receiver for CallSid {call_sid}: {e}", exc_info=True)
+                        break
+
+            async def hume_receiver():
+                """Receives audio and messages from Hume and sends them to Twilio."""
+                while True:
+                    try:
+                        hume_message = await socket.recv_json()
+                        
+                        if hume_message["type"] == "audio_output":
+                            chunk = hume_message["data"]
+                            # Send audio to Twilio
+                            response = {
+                                "event": "media",
+                                "streamSid": call_sid,
+                                "media": {
+                                    "payload": chunk
+                                }
+                            }
+                            await websocket.send_text(json.dumps(response))
+                        
+                        # --- NEW: Capture Transcript ---
+                        elif hume_message["type"] == "user_input":
+                            logging.info(f"Transcript (User): {hume_message['message']['content']}")
+                            full_transcript.append({
+                                "role": "user",
+                                "content": hume_message['message']['content'],
+                                "timestamp": datetime.now().isoformat()
+                            })
+                        elif hume_message["type"] == "assistant_message":
+                            logging.info(f"Transcript (AI): {hume_message['message']['content']}")
+                            full_transcript.append({
+                                "role": "assistant",
+                                "content": hume_message['message']['content'],
+                                "timestamp": datetime.now().isoformat()
+                            })
+                        # --- END NEW ---
+                            
+                        elif hume_message["type"] == "error":
+                            logging.error(f"Hume EVI Error: {hume_message['error']} | Code: {hume_message.get('code')}")
+                        
+                    except Exception as e:
+                        logging.error(f"Error in hume_receiver for CallSid {call_sid}: {e}", exc_info=True)
+                        break
+
+            # Run both receivers concurrently
+            await asyncio.gather(twilio_receiver(), hume_receiver())
+
+    except WebSocketDisconnect:
+        logging.info(f"Hume WebSocket disconnected for CallSid: {call_sid}")
+    except Exception as e:
+        logging.error(f"Error in start_hume_evi_conversation for CallSid {call_sid}: {e}", exc_info=True)
+    finally:
+        logging.info(f"Call finished. Cleaning up for CallSid: {call_sid}")
+        # --- NEW: Save results to Firestore ---
+        if full_transcript:
+            await save_call_results_to_firestore(patient_data, call_sid, full_transcript)
+        # --- END NEW ---
+        
+        # Mark the call as complete to Twilio
+        websocket = active_connections.get(call_sid)
+        if websocket and websocket.client_state == 1: # STATE_CONNECTED
+            try:
+                # Send Twilio a "clear" message to hang up
+                stop_message = {
+                    "event": "clear",
+                    "streamSid": call_sid
+                }
+                await websocket.send_text(json.dumps(stop_message))
+                await websocket.close()
+            except Exception as e:
+                logging.warning(f"Error closing Twilio websocket: {e}")
+        
+        cleanup_connection(call_sid, "Call finished normally")
 
 # --- WebSocket Endpoint for Twilio Audio Stream ---
 @app.websocket("/twilio/audiostream/{call_sid}")
