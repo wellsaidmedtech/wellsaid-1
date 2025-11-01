@@ -53,8 +53,13 @@ if not all([HUME_API_KEY, HUME_SECRET_KEY]):
     logging.error("Hume AI credentials missing. Check environment variables.")
 hume_client = AsyncHumeClient(api_key=HUME_API_KEY)
 
-# 6. Initialize Redis Client
+# 6. Initialize Redis Client & Hostname
 REDIS_URL = os.getenv("REDIS_URL")
+RENDER_EXTERNAL_HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME") # <-- NEW
+
+if not RENDER_EXTERNAL_HOSTNAME:
+    logging.warning("RENDER_EXTERNAL_HOSTNAME not set. WebSocket URLs may be incorrect if behind a proxy.")
+
 if not REDIS_URL:
     logging.error("REDIS_URL not found. App will fail in multi-worker environment.")
     # Fallback for local testing, but not production-safe
@@ -62,7 +67,6 @@ if not REDIS_URL:
     redis_client = None
 else:
     try:
-        # --- FIX: Removed 'decode_responses=True'. We will handle encoding/decoding manually. ---
         redis_client = redis.from_url(REDIS_URL)
         redis_client.ping()
         logging.info("Successfully connected to Redis.")
@@ -88,7 +92,7 @@ app.add_middleware(
 )
 
 
-# --- Redis/Local Connection Management (FIXED) ---
+# --- Redis/Local Connection Management ---
 
 def set_connection_details(call_sid, details):
     """Saves connection details to Redis (or local dict) with an expiration."""
@@ -101,7 +105,6 @@ def set_connection_details(call_sid, details):
     
     if redis_client:
         try:
-            # --- FIX: Manually encode the string to bytes for Redis ---
             redis_client.setex(call_sid, 3600, details_json_string.encode('utf-8'))
         except Exception as e:
             logging.error(f"Redis setex failed: {e}")
@@ -113,7 +116,6 @@ def get_connection_details(call_sid):
     details_json_string = None
     if redis_client:
         try:
-            # --- FIX: Redis 'get' returns bytes, so we must manually decode ---
             details_bytes = redis_client.get(call_sid)
             if details_bytes:
                 details_json_string = details_bytes.decode('utf-8')
@@ -128,7 +130,6 @@ def get_connection_details(call_sid):
         return None
         
     try:
-        # Deserialize and re-hydrate the doc_ref
         details_serializable = json.loads(details_json_string)
         doc_ref = db.document(details_serializable["doc_ref_path"]) # Recreate doc_ref from path
         
@@ -438,7 +439,6 @@ async def handle_incoming_call(request: Request):
         system_prompt = generate_system_prompt(base_prompt, patient_data, call_purpose)
 
         # Store connection details in Redis (or local dict)
-        # --- FIX: Corrected typo 'call_sill' to 'call_sid' ---
         set_connection_details(call_sid, {
             "system_prompt": system_prompt,
             "doc_ref": doc_ref,
@@ -447,7 +447,9 @@ async def handle_incoming_call(request: Request):
 
         response = VoiceResponse()
         connect = Connect()
-        connect.stream(url=f"wss://{request.url.hostname}/twilio/media/{call_sid}")
+        # --- FIX: Use the reliable external hostname from env vars ---
+        hostname = RENDER_EXTERNAL_HOSTNAME or request.url.hostname
+        connect.stream(url=f"wss://{hostname}/twilio/media/{call_sid}")
         response.append(connect)
         response.say("Please wait while we connect you to our AI assistant.")
         
