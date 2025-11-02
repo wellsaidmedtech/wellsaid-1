@@ -15,9 +15,9 @@ from dotenv import load_dotenv
 
 # --- Hume Imports ---
 from hume.client import AsyncHumeClient
-from hume.empathic_voice.chat.socket_client import ChatConnectOptions, SubscribeEvent
+from hume.empathic_voice.chat.socket_client import ChatConnectOptions, SubscribeEvent, AsyncChatSocketClient
 from hume.core.api_error import ApiError
-from hume.empathic_voice.types import AudioInput # <-- CRITICAL IMPORT
+from hume.empathic_voice.types import AudioInput 
 
 # --- Configuration & Initialization ---
 
@@ -260,7 +260,8 @@ class EviHandler:
     This class handles the bi-directional streaming between Twilio and Hume EVI.
     It's created for each call and manages the callbacks from the Hume WebSocket.
     """
-    def __init__(self, twilio_ws: WebSocket, hume_socket, call_sid: str, transcript_list: list):
+    # --- FIX: Add type hint for hume_socket per user's suggestion ---
+    def __init__(self, twilio_ws: WebSocket, hume_socket: AsyncChatSocketClient, call_sid: str, transcript_list: list):
         self.twilio_ws = twilio_ws
         self.hume_socket = hume_socket
         self.call_sid = call_sid
@@ -299,7 +300,6 @@ class EviHandler:
                 }
                 await self.twilio_ws.send_text(json.dumps(response_json))
             
-            # --- NEW: Handle interruptions as per user's research ---
             elif message.type == "user_interruption":
                 logging.info(f"Hume detected user interruption for {self.call_sid}. Clearing Twilio audio queue.")
                 # Send a "clear" message to Twilio to stop any queued audio
@@ -337,7 +337,8 @@ class EviHandler:
                     # 4. Re-encode the new PCM-16 bytes into base64
                     pcm_b64 = base64.b64encode(pcm_bytes).decode('utf-8')
                     
-                    # 5. --- CRITICAL FIX: Use send_publish with an AudioInput model ---
+                    # 5. --- CRITICAL FIX: Use send_publish (which our version *will* have)
+                    #    and pass it the AudioInput *model* it expects.
                     audio_message = AudioInput(data=pcm_b64)
                     await self.hume_socket.send_publish(audio_message)
                     
@@ -406,7 +407,7 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
             await handler.handle_twilio_audio()
 
     except Exception as e:
-        # --- NEW DEBUGGING: This will catch *any* error during WebSocket setup ---
+        # --- NEW DEBUGDEBUGGING: This will catch *any* error during WebSocket setup ---
         logging.critical(f"CRITICAL WEBSOCKET ERROR for {call_sid}: {e}", exc_info=True)
     finally:
         logging.info(f"Cleaning up WebSocket for {call_sid}")
@@ -457,7 +458,6 @@ async def handle_incoming_call(request: Request):
         doc_ref = get_patient_doc_ref(clinic_id, mrn)
         if not doc_ref:
             logging.error(f"Could not find patient doc ref for MRN {mrn}. CallSid: {call_sid}")
-            response.say("An application error occurred. Could not find patient records.")
             return Response(content=response.to_xml(), media_type="text/xml")
         
         patient_data = doc_ref.get().to_dict()

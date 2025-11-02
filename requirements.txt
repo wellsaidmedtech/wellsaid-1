@@ -1,10 +1,12 @@
-fastapi
-uvicorn  # No more [standard]
-websockets  # Explicitly add this
-httptools  # <-- ADDED THIS
-python-multipart
-python-dotenv
-twilio
-firebase-admin
-hume==0.11.1
-redis
+fastapi==0.120.4
+uvicorn==0.38.0
+websockets==13.1
+httptools==0.7.1
+python-multipart==0.0.20
+python-dotenv==1.2.1
+twilio==9.8.5
+firebase-admin==7.1.0
+hume>=0.13.0
+redis==7.0.1
+google-cloud-firestore==2.21.0
+audioop
