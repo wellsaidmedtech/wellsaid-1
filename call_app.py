@@ -326,11 +326,11 @@ class EviHandler:
                     # '2' is the width (2 bytes for 16-bit)
                     pcm_bytes = audioop.ulaw2lin(mulaw_bytes, 2)
                     
-                    # 4. Re-encode the new PCM-16 bytes into base64
+                    # 4. Re-encode the new PCM-16 bytes into base64ß
                     pcm_b64 = base64.b64encode(pcm_bytes).decode('utf-8')
                     
                     # 5. --- FIX: Use positional argument, not keyword argument ---
-                    await self.hume_socket.send_audio_input({ payload_b64 : pcm_b64 })
+                    await self.hume_socket.send_audio_input({ pcm_b64 })
                     
                 elif message_json['event'] == 'stop':
                     logging.info(f"Received 'stop' message from Twilio for {self.call_sid}")
