@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 # --- Hume Imports ---
 from hume.client import AsyncHumeClient
-from hume.empathic_voice.chat.socket_client import ChatConnectOptions, SubscribeEvent
+from hume.empathic_voice.chat.socket_client import ChatConnectOptions, SubscribeEvent, convertBlobToBase64
 from hume.core.api_error import ApiError
 
 # --- Configuration & Initialization ---
@@ -316,21 +316,24 @@ class EviHandler:
                 message_json = json.loads(message_str)
                 
                 if message_json['event'] == 'media':
-                    # 1. Get base64 mu-law audio from Twilio
-                    payload_b64 = message_json['media']['payload']
+                    # # 1. Get base64 mu-law audio from Twilio
+                    # payload_b64 = message_json['media']['payload']
                     
-                    # 2. Decode it into raw mu-law bytes
-                    mulaw_bytes = base64.b64decode(payload_b64)
+                    # # 2. Decode it into raw mu-law bytes
+                    # mulaw_bytes = base64.b64decode(payload_b64)
                     
-                    # 3. Convert mu-law bytes to PCM-16 (linear) bytes. 
-                    # '2' is the width (2 bytes for 16-bit)
-                    pcm_bytes = audioop.ulaw2lin(mulaw_bytes, 2)
+                    # # 3. Convert mu-law bytes to PCM-16 (linear) bytes. 
+                    # # '2' is the width (2 bytes for 16-bit)
+                    # pcm_bytes = audioop.ulaw2lin(mulaw_bytes, 2)
                     
-                    # 4. Re-encode the new PCM-16 bytes into base64ß
-                    pcm_b64 = base64.b64encode(pcm_bytes).decode('utf-8')
+                    # # 4. Re-encode the new PCM-16 bytes into base64ß
+                    # pcm_b64 = base64.b64encode(pcm_bytes).decode('utf-8')
+                    
+                    # MY OWN CODE
+                    data = await convertBlobToBase64(message_json['media']['payload'])
                     
                     # 5. --- FIX: Use positional argument, not keyword argument ---
-                    await self.hume_socket.sendAudioInput({  message_str : pcm_b64 })
+                    await self.hume_socket.send_audio_input({ data })
                     
                 elif message_json['event'] == 'stop':
                     logging.info(f"Received 'stop' message from Twilio for {self.call_sid}")
