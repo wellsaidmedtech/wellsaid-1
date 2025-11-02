@@ -431,7 +431,7 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
                 MicrophoneInterface.start(
                     socket,
                     allow_user_interrupt=True,
-                    byte_stream=stream
+                    byte_stream=hume_stream
                 )
             )
             
