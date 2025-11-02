@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 from hume.client import AsyncHumeClient
 from hume.empathic_voice.chat.socket_client import ChatConnectOptions, SubscribeEvent
 from hume.core.api_error import ApiError
-from hume.models.ws import AudioInput # <-- CRITICAL NEW IMPORT
+from hume.empathic_voice.types import AudioInput # <-- CRITICAL IMPORT
 
 # --- Configuration & Initialization ---
 
