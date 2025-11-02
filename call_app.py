@@ -19,6 +19,7 @@ from hume.client import AsyncHumeClient
 from hume.empathic_voice.chat.socket_client import ChatConnectOptions, SubscribeEvent, AsyncChatSocketClient
 from hume.core.api_error import ApiError
 from hume.empathic_voice.types import AudioInput 
+from hume.empathic_voice.chat.types import PublishEvent
 
 # --- Configuration & Initialization ---
 
@@ -341,7 +342,7 @@ class EviHandler:
                     # 5. --- CRITICAL FIX: Use send_audio_input (which our version has)
                     #    and pass it the AudioInput *model* it expects.
                     audio_message = AudioInput(data=pcm_b64)
-                    await self.hume_socket.send_audio_input(audio_message) # <-- THE FIX
+                    await self.hume_socket.send_publish(audio_message) # <-- THE FIX
                     
                 elif message_json['event'] == 'stop':
                     logging.info(f"Received 'stop' message from Twilio for {self.call_sid}")
@@ -373,7 +374,7 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
             await websocket.close()
             return
         
-        logging.info(f"DEBUG: Successfully retrieved connection details for {call_serial}")
+        logging.info(f"DEBUG: Successfully retrieved connection details for {call_sid}")
 
         system_prompt = connection_details.get("system_prompt", "You are a helpful assistant.")
         doc_ref = connection_details.get("doc_ref") # Assign to outer scope variable
