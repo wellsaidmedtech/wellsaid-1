@@ -338,10 +338,10 @@ class EviHandler:
                     # 4. Re-encode the new PCM-16 bytes into base64
                     pcm_b64 = base64.b64encode(pcm_bytes).decode('utf-8')
                     
-                    # 5. --- CRITICAL FIX: Use send_publish (which our version *will* have)
+                    # 5. --- CRITICAL FIX: Use send_audio_input (which our version has)
                     #    and pass it the AudioInput *model* it expects.
                     audio_message = AudioInput(data=pcm_b64)
-                    await self.hume_socket.send_publish(audio_message)
+                    await self.hume_socket.send_audio_input(audio_message) # <-- THE FIX
                     
                 elif message_json['event'] == 'stop':
                     logging.info(f"Received 'stop' message from Twilio for {self.call_sid}")
@@ -373,7 +373,7 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
             await websocket.close()
             return
         
-        logging.info(f"DEBUG: Successfully retrieved connection details for {call_sid}")
+        logging.info(f"DEBUG: Successfully retrieved connection details for {call_serial}")
 
         system_prompt = connection_details.get("system_prompt", "You are a helpful assistant.")
         doc_ref = connection_details.get("doc_ref") # Assign to outer scope variable
@@ -407,14 +407,26 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
             socket.on_close = handler.on_close
             socket.on_error = handler.on_error
             
-            # This task listens to Twilio and forwards audio to Hume
-            await handler.handle_twilio_audio()
+            # --- FIX: Run both listeners concurrently ---
+            # Task 1: Listen to Twilio and send to Hume
+            twilio_listener_task = asyncio.create_task(handler.handle_twilio_audio())
+            # Task 2: Listen to Hume and send to Twilio
+            hume_listener_task = asyncio.create_task(socket.start_listening())
+            
+            # Wait for either task to complete (e.g., if one disconnects or errors)
+            await asyncio.wait([twilio_listener_task, hume_listener_task], return_when=asyncio.FIRST_COMPLETED)
 
     except Exception as e:
         # --- NEW DEBUGGING: This will catch *any* error during WebSocket setup ---
         logging.critical(f"CRITICAL WEBSOCKET ERROR for {call_sid}: {e}", exc_info=True)
     finally:
         logging.info(f"Cleaning up WebSocket for {call_sid}")
+        # Cancel any lingering tasks
+        if 'twilio_listener_task' in locals() and not twilio_listener_task.done():
+            twilio_listener_task.cancel()
+        if 'hume_listener_task' in locals() and not hume_listener_task.done():
+            hume_listener_task.cancel()
+            
         # Save results to Firestore
         if doc_ref and encounter_date and transcript:
             save_call_results_to_firestore(doc_ref, encounter_date, call_sid, transcript)
