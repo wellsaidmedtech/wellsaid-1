@@ -330,7 +330,7 @@ class EviHandler:
                     pcm_b64 = base64.b64encode(pcm_bytes).decode('utf-8')
                     
                     # 5. --- FIX: Use positional argument, not keyword argument ---
-                    await self.hume_socket.send_audio_input({ pcm_b64 })
+                    await self.hume_socket.sendAudioInput({  message_str : pcm_b64 })
                     
                 elif message_json['event'] == 'stop':
                     logging.info(f"Received 'stop' message from Twilio for {self.call_sid}")
