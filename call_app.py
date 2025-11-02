@@ -19,7 +19,7 @@ from hume.client import AsyncHumeClient
 from hume.empathic_voice.chat.socket_client import ChatConnectOptions, SubscribeEvent, AsyncChatSocketClient
 from hume.core.api_error import ApiError
 from hume.empathic_voice.types import AudioInput 
-from hume.empathic_voice.chat.types import PublishEvent
+from hume.empathic_voice.chat.types import PublishEvent 
 
 # --- Configuration & Initialization ---
 
@@ -262,7 +262,6 @@ class EviHandler:
     This class handles the bi-directional streaming between Twilio and Hume EVI.
     It's created for each call and manages the callbacks from the Hume WebSocket.
     """
-    # --- FIX: Add type hint for hume_socket per user's suggestion ---
     def __init__(self, twilio_ws: WebSocket, hume_socket: AsyncChatSocketClient, call_sid: str, transcript_list: list):
         self.twilio_ws = twilio_ws
         self.hume_socket = hume_socket
@@ -339,10 +338,10 @@ class EviHandler:
                     # 4. Re-encode the new PCM-16 bytes into base64
                     pcm_b64 = base64.b64encode(pcm_bytes).decode('utf-8')
                     
-                    # 5. --- CRITICAL FIX: Use send_audio_input (which our version has)
+                    # 5. --- CRITICAL FIX: Use send_publish (the new method)
                     #    and pass it the AudioInput *model* it expects.
                     audio_message = AudioInput(data=pcm_b64)
-                    await self.hume_socket.send_publish(audio_message) # <-- THE FIX
+                    await self.hume_socket.send_publish(audio_message)
                     
                 elif message_json['event'] == 'stop':
                     logging.info(f"Received 'stop' message from Twilio for {self.call_sid}")
@@ -356,10 +355,10 @@ class EviHandler:
 @app.websocket("/twilio/media/{call_sid}")
 async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
     """Handles the bidirectional audio stream from Twilio."""
-    # --- NEW DEBUGGING: Wrap entire function in a try...except block ---
     transcript = [] # Define transcript here to be in scope for 'finally'
     doc_ref = None      # Define doc_ref here
     encounter_date = None # Define encounter_date here
+    twilio_listener_task = None # Define task here
     
     try:
         logging.info(f"DEBUG: WebSocket route hit for {call_sid}")
@@ -388,45 +387,37 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
             secret_key=HUME_SECRET_KEY # Use the secret for auth
         )
         
+        # --- CRITICAL FIX: Refactor to match user's documentation ---
+        # Create the handler class *first*
+        handler = EviHandler(websocket, None, call_sid, transcript) # Socket is None for now
+
         # Use the new connect_with_callbacks method
         async with hume_client.empathic_voice.chat.connect_with_callbacks(
             options=options,
-            on_open=None,    # We will assign these via the handler
-            on_message=None,
-            on_close=None,
-            on_error=None
+            on_open=handler.on_open,
+            on_message=handler.on_message,
+            on_close=handler.on_close,
+            on_error=handler.on_error
         ) as socket:
             
             logging.info(f"DEBUG: Hume EVI connection successful for {call_sid}")
             
-            # Create the handler class to manage the connection state
-            handler = EviHandler(websocket, socket, call_sid, transcript)
+            # Now that we have the socket, assign it to the handler
+            handler.hume_socket = socket
             
-            # Assign the callback methods from our handler
-            socket.on_open = handler.on_open
-            socket.on_message = handler.on_message
-            socket.on_close = handler.on_close
-            socket.on_error = handler.on_error
-            
-            # --- FIX: Run both listeners concurrently ---
-            # Task 1: Listen to Twilio and send to Hume
+            # The Hume listener is already running (managed by connect_with_callbacks).
+            # We only need to create and await our Twilio listener.
             twilio_listener_task = asyncio.create_task(handler.handle_twilio_audio())
-            # Task 2: Listen to Hume and send to Twilio
-            hume_listener_task = asyncio.create_task(socket.start_listening())
             
-            # Wait for either task to complete (e.g., if one disconnects or errors)
-            await asyncio.wait([twilio_listener_task, hume_listener_task], return_when=asyncio.FIRST_COMPLETED)
+            await twilio_listener_task
 
     except Exception as e:
-        # --- NEW DEBUGGING: This will catch *any* error during WebSocket setup ---
         logging.critical(f"CRITICAL WEBSOCKET ERROR for {call_sid}: {e}", exc_info=True)
     finally:
         logging.info(f"Cleaning up WebSocket for {call_sid}")
         # Cancel any lingering tasks
-        if 'twilio_listener_task' in locals() and not twilio_listener_task.done():
+        if twilio_listener_task and not twilio_listener_task.done():
             twilio_listener_task.cancel()
-        if 'hume_listener_task' in locals() and not hume_listener_task.done():
-            hume_listener_task.cancel()
             
         # Save results to Firestore
         if doc_ref and encounter_date and transcript:
