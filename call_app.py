@@ -15,8 +15,9 @@ from dotenv import load_dotenv
 
 # --- Hume Imports ---
 from hume.client import AsyncHumeClient
-from hume.empathic_voice.chat.socket_client import ChatConnectOptions, SubscribeEvent, convertBlobToBase64
+from hume.empathic_voice.chat.socket_client import ChatConnectOptions, SubscribeEvent
 from hume.core.api_error import ApiError
+from hume.models.ws import AudioInput # <-- CRITICAL NEW IMPORT
 
 # --- Configuration & Initialization ---
 
@@ -233,10 +234,17 @@ def save_call_results_to_firestore(doc_ref, encounter_date, call_sid, transcript
         
     try:
         encounter_path = f"encounters.{encounter_date}"
+        
+        # --- NEW SCHEMA ---
+        # We will add a placeholder summary. A separate function will be needed to do real summarization.
+        summary = "Call completed. Summary pending generation."
+        
         update_data = {
             f"{encounter_path}.status": "completed",
             f"{encounter_path}.call_sid": call_sid,
-            f"{encounter_path}.call_transcript": "\n".join(transcript)
+            f"{encounter_path}.call_transcript": "\n".join(transcript),
+            f"{encounter_path}.details": summary, # <-- NEW FIELD
+            f"{encounter_path}.encounter_id": f"ai-{call_sid}" # <-- NEW FIELD
         }
         
         doc_ref.update(update_data)
@@ -316,24 +324,22 @@ class EviHandler:
                 message_json = json.loads(message_str)
                 
                 if message_json['event'] == 'media':
-                    # # 1. Get base64 mu-law audio from Twilio
-                    # payload_b64 = message_json['media']['payload']
+                    # 1. Get base64 mu-law audio from Twilio
+                    payload_b64 = message_json['media']['payload']
                     
-                    # # 2. Decode it into raw mu-law bytes
-                    # mulaw_bytes = base64.b64decode(payload_b64)
+                    # 2. Decode it into raw mu-law bytes
+                    mulaw_bytes = base64.b64decode(payload_b64)
                     
-                    # # 3. Convert mu-law bytes to PCM-16 (linear) bytes. 
-                    # # '2' is the width (2 bytes for 16-bit)
-                    # pcm_bytes = audioop.ulaw2lin(mulaw_bytes, 2)
+                    # 3. Convert mu-law bytes to PCM-16 (linear) bytes. 
+                    # '2' is the width (2 bytes for 16-bit)
+                    pcm_bytes = audioop.ulaw2lin(mulaw_bytes, 2)
                     
-                    # # 4. Re-encode the new PCM-16 bytes into base64ß
-                    # pcm_b64 = base64.b64encode(pcm_bytes).decode('utf-8')
+                    # 4. Re-encode the new PCM-16 bytes into base64
+                    pcm_b64 = base64.b64encode(pcm_bytes).decode('utf-8')
                     
-                    # MY OWN CODE
-                    data = await convertBlobToBase64(message_json['media']['payload'])
-                    
-                    # 5. --- FIX: Use positional argument, not keyword argument ---
-                    await self.hume_socket.send_audio_input({ data })
+                    # 5. --- CRITICAL FIX: Use send_publish with an AudioInput model ---
+                    audio_message = AudioInput(data=pcm_b64)
+                    await self.hume_socket.send_publish(audio_message)
                     
                 elif message_json['event'] == 'stop':
                     logging.info(f"Received 'stop' message from Twilio for {self.call_sid}")
@@ -468,7 +474,6 @@ async def handle_incoming_call(request: Request):
 
         if not scheduled_call:
             logging.error(f"No scheduled AI call found for MRN {mrn}. CallSid: {call_sid}")
-            response.say("Thank you for calling. No scheduled AI interactions found for your account. Goodbye.")
             return Response(content=response.to_xml(), media_type="text/xml")
 
         call_purpose = scheduled_call.get("purpose", "a routine check-in")
