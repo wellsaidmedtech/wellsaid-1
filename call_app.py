@@ -19,7 +19,6 @@ from hume.client import AsyncHumeClient
 from hume.empathic_voice.chat.socket_client import ChatConnectOptions, SubscribeEvent, AsyncChatSocketClient
 from hume.core.api_error import ApiError
 from hume.empathic_voice.types import AudioInput 
-from hume.empathic_voice.chat.types import PublishEvent 
 
 # --- Configuration & Initialization ---
 
@@ -288,15 +287,26 @@ class EviHandler:
                 self.transcript.append(f"Assistant: {message.message.content}")
             
             elif message.type == "audio_output":
-                # This is audio from Hume. Decode it and send it to Twilio.
-                audio_b64 = message.data
+                # --- AUDIO FIX: Convert Hume's PCM audio back to Twilio's mu-law ---
+                # 1. Get base64 PCM audio from Hume
+                pcm_b64 = message.data
                 
-                # Format for Twilio Media Stream
+                # 2. Decode it into raw PCM-16 bytes
+                pcm_bytes = base64.b64decode(pcm_b64)
+                
+                # 3. Convert PCM-16 bytes back to mu-law bytes
+                # '2' is the width (2 bytes for 16-bit)
+                mulaw_bytes = audioop.lin2ulaw(pcm_bytes, 2)
+                
+                # 4. Re-encode the new mu-law bytes into base64
+                mulaw_b64 = base64.b64encode(mulaw_bytes).decode('utf-8')
+                
+                # 5. Format for Twilio Media Stream
                 response_json = {
                     "event": "media",
                     "streamSid": self.call_sid, 
                     "media": {
-                        "payload": audio_b64
+                        "payload": mulaw_b64 # <-- Send corrected audio format
                     }
                 }
                 await self.twilio_ws.send_text(json.dumps(response_json))
@@ -331,7 +341,7 @@ class EviHandler:
                     # 2. Decode it into raw mu-law bytes
                     mulaw_bytes = base64.b64decode(payload_b64)
                     
-                    # 3. Convert mu-law bytes to PCM-16 (linear) bytes. 
+                    # 3. Convert mu-law bytes to PCM-16 (bytes) for Hume
                     # '2' is the width (2 bytes for 16-bit)
                     pcm_bytes = audioop.ulaw2lin(mulaw_bytes, 2)
                     
@@ -499,13 +509,14 @@ async def handle_incoming_call(request: Request):
         })
 
         # --- THIS IS THE "SUCCESS" PATH ---
+        # --- TwiML FIX: Say *before* you Connect ---
+        response.say("Please wait while we connect you to our AI assistant.")
         connect = Connect()
         hostname = RENDER_EXTERNAL_HOSTNAME or request.url.hostname
         websocket_url = f"wss://{hostname}/twilio/media/{call_sid}"
         logging.info(f"Connecting to WebSocket: {websocket_url}") 
         connect.stream(url=websocket_url)
         response.append(connect)
-        response.say("Please wait while we connect you to our AI assistant.")
         
         logging.info(f"Returning TwiML to Twilio for CallSid: {call_sid}")
         return Response(content=response.to_xml(), media_type="text/xml")
