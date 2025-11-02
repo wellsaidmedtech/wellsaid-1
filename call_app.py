@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 
 # --- Hume Imports ---
 from hume.client import AsyncHumeClient
+# --- FIX: Add AsyncChatSocketClient for type hinting ---
 from hume.empathic_voice.chat.socket_client import ChatConnectOptions, SubscribeEvent, AsyncChatSocketClient
 from hume.core.api_error import ApiError
 from hume.empathic_voice.types import AudioInput 
@@ -355,6 +356,10 @@ class EviHandler:
 async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
     """Handles the bidirectional audio stream from Twilio."""
     # --- NEW DEBUGGING: Wrap entire function in a try...except block ---
+    transcript = [] # Define transcript here to be in scope for 'finally'
+    doc_ref = None      # Define doc_ref here
+    encounter_date = None # Define encounter_date here
+    
     try:
         logging.info(f"DEBUG: WebSocket route hit for {call_sid}")
         await websocket.accept()
@@ -371,9 +376,8 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
         logging.info(f"DEBUG: Successfully retrieved connection details for {call_sid}")
 
         system_prompt = connection_details.get("system_prompt", "You are a helpful assistant.")
-        doc_ref = connection_details.get("doc_ref")
-        encounter_date = connection_details.get("encounter_date")
-        transcript = []
+        doc_ref = connection_details.get("doc_ref") # Assign to outer scope variable
+        encounter_date = connection_details.get("encounter_date") # Assign to outer scope variable
         
         logging.info(f"DEBUG: Attempting to connect to Hume EVI for {call_sid}...")
         
@@ -407,14 +411,13 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
             await handler.handle_twilio_audio()
 
     except Exception as e:
-        # --- NEW DEBUGDEBUGGING: This will catch *any* error during WebSocket setup ---
+        # --- NEW DEBUGGING: This will catch *any* error during WebSocket setup ---
         logging.critical(f"CRITICAL WEBSOCKET ERROR for {call_sid}: {e}", exc_info=True)
     finally:
         logging.info(f"Cleaning up WebSocket for {call_sid}")
         # Save results to Firestore
-        if 'doc_ref' in locals() and 'encounter_date' in locals() and 'transcript' in locals():
-            if doc_ref and encounter_date and transcript:
-                save_call_results_to_firestore(doc_ref, encounter_date, call_sid, transcript)
+        if doc_ref and encounter_date and transcript:
+            save_call_results_to_firestore(doc_ref, encounter_date, call_sid, transcript)
         
         # Mark the call as complete with Twilio (if not already done)
         try:
