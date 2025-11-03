@@ -210,39 +210,68 @@ def fetch_prompts(prompt_ids):
         logging.error(f"Error fetching prompts: {e}")
     return prompt_data
 
-def generate_system_prompt(base_prompt, patient_data, purpose):
-    """Generates a dynamic system prompt based on call purpose and patient data. (SYNC)"""
-    system_prompt = base_prompt.replace("[patient-name]", patient_data.get("name", "unobtainable patient name"))
-    system_prompt = system_prompt.replace("[dob]", patient_data.get("dob", "unobtainable birthday"))
-    system_prompt = system_prompt.replace("[allergies]", patient_data.get("allergies", "unobtainable allergies"))
-
-    kb_doc_id = ""
-    if purpose == "medication adherence" or purpose == "medication follow-up":
-        kb_doc_id = "kb_medication_adherence"
-    elif purpose == "post-op checkin":
-        kb_doc_id = "kb_post_op_checkin"
+def generate_system_prompt(base_prompt: str, patient_data: dict, call_purpose: str) -> str:
+    """
+    Dynamically generates the system prompt by replacing placeholders
+    in the base_prompt with actual patient data.
+    """
     
-    if kb_doc_id:
-        try:
-            kb_prompts = fetch_prompts([kb_doc_id])
-            kb_content = kb_prompts.get(kb_doc_id)
-            if kb_content:
-                system_prompt += f"\n\n--- {kb_doc_id.replace('_', ' ').title()} Protocol ---\n{kb_content}"
-        except Exception as e:
-            logging.error(f"Failed to fetch KB prompt {kb_doc_id}: {e}")
-
-    if purpose == "medication adherence" or purpose == "medication follow-up":
-        meds = ", ".join(patient_data.get("medications", [])) or "your new medications"
-        system_prompt = system_prompt.replace("[medications]", meds)
+    # --- 1. Prepare your data ---
     
-    if purpose == "post-op checkin":
-        proc = ", ".join(patient_data.get("procedures_history", [])) or "your recent procedure"
-        system_prompt = system_prompt.replace("[procedures-history]", proc)
-        
-    patient_name = patient_data.get("name","none obtained")
-    logging.info(f"Generated system prompt for name: {patient_name}")
-    return system_prompt
+    # Simple values (use .get() for safety, providing a fallback)
+    patient_name = patient_data.get("full_name", "the patient")
+    patient_dob = patient_data.get("dob", "not specified")
+    
+    # --- 2. Format the complex data (like medications) ---
+    med_list = patient_data.get("medications", []) # Get the list, default to empty
+    if med_list:
+        # (Using Scenario A from above)
+        # We assume med_list is a list of strings
+        med_string = "\n- " + "\n- ".join(med_list)
+    else:
+        med_string = "None on file."
 
+    allergies_list = patient_data.get("allergies", [])
+    if allergies_list:
+        allergies_string = "\n- " + "\n- ".join(allergies_list)
+    else:
+        allergies_string = "None on file."
+
+    conditions_list = patient_data.get("medical_conditions", [])
+    if conditions_list:
+        conditions_string = "\n- " + "\n- ".join(conditions_list)
+    else:
+        conditions_string = "None on file."
+
+    history_procedures_list = patient_data.get("procedures_history", [])
+    if history_procedures_list:
+        history_procedures_string = "\n- " + "\n- ".join(history_procedures_list)
+    else:
+        history_procedures_string = "None on file."
+
+    # --- 3. Create a dictionary of all your replacements ---
+    replacements = {
+        "patient_name": patient_name,
+        "patient_dob": patient_dob,
+        "call_purpose": call_purpose,
+        "medical_conditions": conditions_string,
+        "medications": med_string,
+        "allergies": allergies_string,
+        "procedures_history": history_procedures_string,
+        # "last_visit": patient_data.get("last_visit_date", "not specified")
+    }
+
+    # --- 4. Fill in the template in one single, clean call ---
+    try:
+        final_prompt = base_prompt.format(**replacements)
+        log.info(f"Generated system prompt for purpose: {call_purpose}")
+        return final_prompt
+    except KeyError as e:
+        # This error is great! It tells you if you missed a placeholder.
+        # e.g., "KeyError: 'patient_address'" means you forgot to add that to your replacements dict.
+        log.error(f"Missing key in prompt replacements: {e}", exc_info=True)
+        # Fallback to the base prompt so the call doesn't fail
+        return base_prompt
 
 # --- WebSocket Connection Management ---
 active_connections = {} # Key: CallSid, Value: Dict
