@@ -684,7 +684,7 @@ async def listen_to_hume(call_sid: str):
                 twilio_ws = connection_details.get("twilio_ws")
                 stream_sid = connection_details.get("stream_sid")
 
-                if twilio_ws and stream_sid and twilio_ws.client_state == websockets.protocol.State.OPEN:
+                if twilio_ws and stream_sid:
                     try:
                         wav_b64 = hume_data.get("data")
                         if not wav_b64:
