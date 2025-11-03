@@ -15,11 +15,10 @@ from dotenv import load_dotenv
 
 # --- Hume Imports ---
 from hume.client import AsyncHumeClient
-# --- FIX: Removed ChatConnectOptions ---
 from hume.empathic_voice.chat.socket_client import SubscribeEvent, AsyncChatSocketClient
 from hume.core.api_error import ApiError
-# --- FIX: Removed ChatConnectOptions ---
-from hume.empathic_voice.types import AudioInput 
+# --- CRITICAL FIX: Import the correct types ---
+from hume.empathic_voice.types import AudioInput, ConnectSessionSettings 
 
 # --- Configuration & Initialization ---
 
@@ -395,10 +394,15 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
         # --- CRITICAL FIX: Create handler class *first* ---
         handler = EviHandler(websocket, None, call_sid, transcript) # Socket is None for now
 
-        # --- CRITICAL FIX: Pass kwargs to connect_with_callbacks, NOT 'options' ---
+        # --- CRITICAL FIX: Use .connect() and pass session_settings ---
+        # 1. Create the new session settings object
+        session_settings = ConnectSessionSettings(
+            system_prompt=system_prompt
+        )
+
+        # 2. Use the new .connect() method and pass callbacks
         async with hume_client.empathic_voice.chat.connect(
-            system_prompt=system_prompt,
-            secret_key=HUME_SECRET_KEY,
+            session_settings=session_settings,
             on_open=handler.on_open,
             on_message=handler.on_message,
             on_close=handler.on_close,
@@ -407,11 +411,11 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
             
             logging.info(f"DEBUG: Hume EVI connection successful for {call_sid}")
             
-            # Now that we have the socket, assign it to the handler
+            # 3. Now that we have the socket, assign it to the handler
             handler.hume_socket = socket
             
-            # The Hume listener is already running (managed by connect_with_callbacks).
-            # We only need to create and await our Twilio listener.
+            # 4. The Hume listener is already running (managed by connect_with_callbacks).
+            #    We only need to create and await our Twilio listener.
             twilio_listener_task = asyncio.create_task(handler.handle_twilio_audio())
             
             await twilio_listener_task
