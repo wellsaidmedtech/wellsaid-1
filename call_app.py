@@ -264,7 +264,8 @@ def generate_system_prompt(base_prompt: str, patient_data: dict, call_purpose: s
     # --- 4. Fill in the template in one single, clean call ---
     try:
         final_prompt = base_prompt.format(**replacements)
-        log.info(f"Generated system prompt for purpose: {call_purpose}")
+        log.info(f"Generated system prompt for patient: {patient_name}")
+        log.info(f"Full prompt for debugging: {final_prompt}")
         return final_prompt
     except KeyError as e:
         # This error is great! It tells you if you missed a placeholder.
