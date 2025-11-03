@@ -866,14 +866,14 @@ async def listen_to_hume(call_sid: str):
                          connection_details["is_interrupted"] = False
                          is_interrupted = False
                     transcript.append(f"USER: {content}")
-                    log.info(f"Transcript part added: USER: {content[:500]}... CallSid: {call_sid}")
+                    log.info(f"Transcript part added: USER: {content[:100]}... CallSid: {call_sid}")
                 elif role == "assistant":
                      if connection_details:
                          if is_interrupted: log.info(f"Assistant message received - Resetting interruption flag. CallSid: {call_sid}")
                          connection_details["is_interrupted"] = False
                          is_interrupted = False
                      transcript.append(f"ASSISTANT: {content}")
-                     log.info(f"Transcript part added: ASSISTANT: {content[:500]}... CallSid: {call_sid}")
+                     log.info(f"Transcript part added: ASSISTANT: {content[:100]}... CallSid: {call_sid}")
 
             elif hume_type == "user_interruption":
                 log.warning(f"Explicit user_interruption event received - Setting interruption flag. CallSid: {call_sid}")
