@@ -252,6 +252,12 @@ async def cleanup_connection(call_sid: str, reason: str = "Unknown"):
         return
 
     log.info(f"Cleaning up connections for CallSid: {call_sid} (Reason: {reason})")
+
+    # 1. Clean up Redis data
+    del_connection_details(call_sid)
+    log.info(f"Removed connection details from Redis for {call_sid}")
+    
+    # 2. Clean up local WebSocket objects (your existing logic)
     connection_details = active_connections.pop(call_sid, None)
 
     if connection_details:
@@ -410,48 +416,49 @@ async def handle_incoming_call(request: Request):
 
         # log.info(f"Identified Patient: {patient_data.get('name', 'N/A')} (MRN: {mrn})")
 
-        # --- 2. Connect to Hume EVI ---
-        if not HUME_API_KEY or not HUME_EVI_WS_URI or not HUME_CONFIG_ID:
-            log.error(f"Hume configuration missing. Cannot connect. CallSid: {call_sid}")
-            response = VoiceResponse(); response.say("AI service configuration error."); response.hangup()
-            return Response(content=str(response), media_type="text/xml", status_code=200)
+        # # --- 2. Connect to Hume EVI ---
+        # if not HUME_API_KEY or not HUME_EVI_WS_URI or not HUME_CONFIG_ID:
+        #     log.error(f"Hume configuration missing. Cannot connect. CallSid: {call_sid}")
+        #     response = VoiceResponse(); response.say("AI service configuration error."); response.hangup()
+        #     return Response(content=str(response), media_type="text/xml", status_code=200)
         
 
-        hume_socket_uri = (
-            f"{HUME_EVI_WS_URI}?apiKey={HUME_API_KEY}"
-            f"&config_id={HUME_CONFIG_ID}"
-            f"&verbose_transcription=true"
-        )
-        log.info(f"Connecting to Hume EVI WebSocket... CallSid: {call_sid}")
+        # hume_socket_uri = (
+        #     f"{HUME_EVI_WS_URI}?apiKey={HUME_API_KEY}"
+        #     f"&config_id={HUME_CONFIG_ID}"
+        #     f"&verbose_transcription=true"
+        # )
+        # log.info(f"Connecting to Hume EVI WebSocket... CallSid: {call_sid}")
         
-        try:
-            hume_websocket = await websockets.connect(hume_socket_uri)
+        # try:
+        #     hume_websocket = await websockets.connect(hume_socket_uri)
 
-        except websockets.exceptions.InvalidURI:
-             log.error(f"Invalid Hume WebSocket URI: {HUME_EVI_WS_URI}. CallSid: {call_sid}", exc_info=True)
-             response = VoiceResponse(); response.say("AI connection error: Invalid address."); response.hangup()
-             return Response(content=str(response), media_type="text/xml", status_code=200)
-        except websockets.exceptions.WebSocketException as e:
-             log.error(f"Failed to connect to Hume EVI WebSocket: {e}. CallSid: {call_sid}", exc_info=True)
-             response = VoiceResponse(); response.say("Could not connect to the AI service."); response.hangup()
-             return Response(content=str(response), media_type="text/xml", status_code=200)
+        # except websockets.exceptions.InvalidURI:
+        #      log.error(f"Invalid Hume WebSocket URI: {HUME_EVI_WS_URI}. CallSid: {call_sid}", exc_info=True)
+        #      response = VoiceResponse(); response.say("AI connection error: Invalid address."); response.hangup()
+        #      return Response(content=str(response), media_type="text/xml", status_code=200)
+        # except websockets.exceptions.WebSocketException as e:
+        #      log.error(f"Failed to connect to Hume EVI WebSocket: {e}. CallSid: {call_sid}", exc_info=True)
+        #      response = VoiceResponse(); response.say("Could not connect to the AI service."); response.hangup()
+        #      return Response(content=str(response), media_type="text/xml", status_code=200)
 
-        log.info(f"WebSocket connection to Hume EVI established. CallSid: {call_sid}")
+        # log.info(f"WebSocket connection to Hume EVI established. CallSid: {call_sid}")
 
         
-        active_connections[call_sid] = {
-            "hume_ws": hume_websocket,
-            "twilio_ws": None,
-            "stream_sid": None,
-            "resample_state": None,
-            "transcript": [],
-            "is_interrupted": False,
-            "system_prompt": system_prompt,
-            "doc_ref": doc_ref,
-            "encounter_date": encounter_date
-        }
+        # active_connections[call_sid] = {
+        #     "hume_ws": hume_websocket,
+        #     "twilio_ws": None,
+        #     "stream_sid": None,
+        #     "resample_state": None,
+        #     "transcript": [],
+        #     "is_interrupted": False,
+        #     "system_prompt": system_prompt,
+        #     "doc_ref": doc_ref,
+        #     "encounter_date": encounter_date,
+        # }
+        # asyncio.create_task(listen_to_hume(call_sid))
 
-        # --- 3. Send Initial Settings (with VARIABLES and TOOL) ---
+        # --- Send Initial Settings (with VARIABLES and TOOL) ---
 
         # initial_message = {
         #     "type": "session_settings",
@@ -507,7 +514,7 @@ async def handle_incoming_call(request: Request):
         #      return Response(content=str(response), media_type="text/xml", status_code=200)
 
         # Start the background listener task *only after* settings are sent successfully
-        asyncio.create_task(listen_to_hume(call_sid))
+  
 
     except Exception as e:
         log.error(f"Unexpected error in handle_incoming_call for CallSid {call_sid}: {e}", exc_info=True)
@@ -515,7 +522,7 @@ async def handle_incoming_call(request: Request):
         response = VoiceResponse(); response.say("An unexpected server error occurred during setup."); response.hangup()
         return Response(content=str(response), media_type="text/xml", status_code=200)
 
-    # --- 4. Respond to Twilio with TwiML to start <Stream> ---
+    # --- 3. Respond to Twilio with TwiML to start <Stream> ---
     response = VoiceResponse()
     connect = Connect()
     stream_url = f"wss://{RENDER_APP_HOSTNAME}/twilio/media/{call_sid}"
@@ -532,21 +539,66 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
     """
     Receives audio (mu-law) from Twilio, transcodes, forwards to Hume.
     """
-    connection_details = active_connections.get(call_sid) # old
-    # connection_details = get_connection_details(call_sid)   # new
+    # connection_details = active_connections.get(call_sid) # old
 
-    if not connection_details:
-        log.error(f"Twilio WS connected, but no active Hume connection found for CallSid: {call_sid}. Closing immediately.")
+    # 1. Fetch connection details from Redis
+    connection_details_from_redis = get_connection_details(call_sid)
+    if not connection_details_from_redis:
+        log.error(f"Twilio WS connected, but no connection details found in Redis for CallSid: {call_sid}. Closing.")
+        await websocket.close(code=1003, reason="Connection details not found")
         return
 
+    # 2. Connect to Hume EVI
+    if not HUME_API_KEY or not HUME_EVI_WS_URI or not HUME_CONFIG_ID:
+        log.error(f"Hume configuration missing. Cannot connect. CallSid: {call_sid}")
+        await websocket.close(code=1003, reason="AI service config error")
+        return
+
+    hume_socket_uri = (
+        f"{HUME_EVI_WS_URI}?apiKey={HUME_API_KEY}"
+        f"&config_id={HUME_CONFIG_ID}"
+        f"&verbose_transcription=true"
+    )
+    log.info(f"Connecting to Hume EVI WebSocket... CallSid: {call_sid}")
+
+    try:
+        hume_websocket = await websockets.connect(hume_socket_uri)
+    except Exception as e:
+        log.error(f"Failed to connect to Hume EVI WebSocket: {e}. CallSid: {call_sid}", exc_info=True)
+        await websocket.close(code=1003, reason="Could not connect to AI service")
+        return
+    
+    log.info(f"WebSocket connection to Hume EVI established. CallSid: {call_sid}")
+    # --- [END NEW LOGIC] ---
     
     try:
         await websocket.accept()
         log.info(f"Twilio WebSocket accepted for CallSid: {call_sid}")
 
+        # --- [NEW LOGIC] ---
+        # 3. Store *both* connections in the local-memory dict
+        active_connections[call_sid] = {
+            "hume_ws": hume_websocket,
+            "twilio_ws": websocket, # The websocket from this function
+            "stream_sid": None,
+            "resample_state": None,
+            "transcript": [],
+            "is_interrupted": False,
+            "system_prompt": connection_details_from_redis.get("system_prompt"),
+            "doc_ref": connection_details_from_redis.get("doc_ref"),
+            "encounter_date": connection_details_from_redis.get("encounter_date"),
+        }
+        
+        # 4. Start the listener task *from this worker*
+        asyncio.create_task(listen_to_hume(call_sid))
+        # --- [END NEW LOGIC] ---
 
-        connection_details["twilio_ws"] = websocket # Store WS only after accept
+        # 5. Get the local connection details for the rest of the function
+        connection_details = active_connections.get(call_sid)
         hume_ws = connection_details["hume_ws"]
+
+        # connection_details["twilio_ws"] = websocket # Store WS only after accept
+        # hume_ws = connection_details["hume_ws"]
 
         while True:
             if hume_ws.closed:
@@ -604,6 +656,18 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
                 if hume_ws.closed:
                     log.warning(f"Skipping Twilio media - Hume WS closed. CallSid: {call_sid}")
                     continue
+                
+                if connection_details.get("is_interrupted", False):
+                # User started speaking while AI was talking.
+                    log.info(f"User interruption detected. Sending 'user_interruption' to Hume. CallSid: {call_sid}")
+                try:
+                    # Tell Hume to stop talking
+                    await hume_ws.send(json.dumps({"type": "user_interruption"}))
+                    # Reset the flag immediately
+                    connection_details["is_interrupted"] = False
+                except Exception as e:
+                    log.warning(f"Failed to send user_interruption to Hume: {e}. CallSid: {call_sid}")
+
 
                 try:
                     mulaw_bytes = base64.b64decode(payload)
