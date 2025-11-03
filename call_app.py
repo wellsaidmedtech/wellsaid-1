@@ -570,7 +570,7 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
             if event == "start":
                 stream_sid = data.get("start", {}).get("streamSid")
                 if stream_sid:
-                    # connection_details["stream_sid"] = stream_sid
+                    connection_details["stream_sid"] = stream_sid
                     log.info(f"Twilio 'start' message received, Stream SID: {stream_sid}. CallSid: {call_sid}")
                 
                     # Now that Twilio is fully ready, send the initial prompt to Hume.
