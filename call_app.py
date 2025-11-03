@@ -580,7 +580,7 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
                         initial_message = {
                             "type": "session_settings",
                             "context": { "text": "You are a helpful AI agent."},
-                            "audio": { "encoding": "linear16", "sample_rate": 8000, "channels": 1 },
+                            "audio": { "encoding": "linear16", "sample_rate": 16000, "channels": 1 },
                             "voice_id": "97fe9008-8584-4d56-8453-bd8c7ead3663",
                             "system_prompt": system_prompt
                         } 
