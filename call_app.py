@@ -358,7 +358,7 @@ class EviHandler:
                     audio_message = { "type": "audio_input", "data": pcm_b64 }
 
                     
-                    await self.hume_socket.send(json.dumps(audio_message))
+                    await self.hume_socket._send(audio_message)
                     
                 elif message_json['event'] == 'stop':
                     logging.info(f"Received 'stop' message from Twilio for {self.call_sid}")
