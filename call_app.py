@@ -356,13 +356,17 @@ async def handle_incoming_call(request: Request):
 
         # --- 3. Send Initial Settings (with VARIABLES and TOOL) ---
 
-        initial_message = {
-            "type": "session_settings",
-            "context": { "text": "You are a helpful AI agent."},
-            "audio": { "encoding": "linear16", "sample_rate": 8000, "channels": 1 },
-            "voice_id": "97fe9008-8584-4d56-8453-bd8c7ead3663",
-            "system_prompt": system_prompt
-        }
+        # initial_message = {
+        #     "type": "session_settings",
+        #     "context": { "text": "You are a helpful AI agent."},
+        #     "audio": { "encoding": "linear16", "sample_rate": 8000, "channels": 1 },
+        #     "voice_id": "97fe9008-8584-4d56-8453-bd8c7ead3663",
+        #     "system_prompt": system_prompt
+        # }
+
+        # try:
+        #     await hume_websocket.send(json.dumps(initial_message))
+        #     log.info(f"Sent session_settings to Hume EVI. CallSid: {call_sid}")
 
         # conditions_list = ", ".join(patient_data.get('medical_conditions', ['N/A']))
         # medications_list = ", ".join(patient_data.get('current_medications', ['N/A']))
@@ -398,17 +402,15 @@ async def handle_incoming_call(request: Request):
         #     }]
         # }
         
-        try:
-            await hume_websocket.send(json.dumps(initial_message))
-            log.info(f"Sent session_settings to Hume EVI. CallSid: {call_sid}")
-        except websockets.exceptions.ConnectionClosed as e:
-             log.error(f"Hume WS closed unexpectedly after connect, before sending settings: {e}. CallSid: {call_sid}", exc_info=True)
-             await cleanup_connection(call_sid, "Hume WS closed early")
-             response = VoiceResponse(); response.say("AI connection lost early."); response.hangup()
-             return Response(content=str(response), media_type="text/xml", status_code=200)
 
-        # Start the background listener task *only after* settings are sent successfully
-        asyncio.create_task(listen_to_hume(call_sid))
+        # except websockets.exceptions.ConnectionClosed as e:
+        #      log.error(f"Hume WS closed unexpectedly after connect, before sending settings: {e}. CallSid: {call_sid}", exc_info=True)
+        #      await cleanup_connection(call_sid, "Hume WS closed early")
+        #      response = VoiceResponse(); response.say("AI connection lost early."); response.hangup()
+        #      return Response(content=str(response), media_type="text/xml", status_code=200)
+
+        # # Start the background listener task *only after* settings are sent successfully
+        # asyncio.create_task(listen_to_hume(call_sid))
 
     except Exception as e:
         log.error(f"Unexpected error in handle_incoming_call for CallSid {call_sid}: {e}", exc_info=True)
@@ -469,6 +471,26 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
                 if stream_sid:
                     connection_details["stream_sid"] = stream_sid
                     log.info(f"Twilio 'start' message received, Stream SID: {stream_sid}. CallSid: {call_sid}")
+                
+                    # Now that Twilio is fully ready, send the initial prompt to Hume.
+                    system_prompt = connection_details.get("system_prompt")
+                    if system_prompt and hume_ws.open:
+                        log.info(f"Twilio stream started. Sending session_settings to Hume. CallSid: {call_sid}")
+                        initial_message = {
+                            "type": "session_settings",
+                            "context": { "text": "You are a helpful AI agent."},
+                            "audio": { "encoding": "linear16", "sample_rate": 8000, "channels": 1 },
+                            "voice_id": "97fe9008-8584-4d56-8453-bd8c7ead3663",
+                            "system_prompt": system_prompt
+                        }
+                        try:
+                            await hume_ws.send(json.dumps(initial_message))
+                            log.info(f"Sent session_settings to Hume EVI. CallSid: {call_sid}")
+                        except Exception as e:
+                            log.error(f"Error sending session_settings to Hume after Twilio start: {e}", exc_info=True)
+                    elif not system_prompt:
+                         log.error(f"Twilio started, but no system_prompt found in active_connections. CallSid: {call_sid}")
+                
                 else:
                     log.warning(f"Twilio 'start' message missing streamSid. CallSid: {call_sid}")
 
