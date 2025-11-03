@@ -226,7 +226,7 @@ async def start_outbound_call(call_request: StartCallRequest):
         raise HTTPException(status_code=400, detail="Patient record missing phone number.")
 
     try:
-        webhook_url = f"https://{RENDER_APP_HOSTNAME}/twilio/incoming_call?mrn={mrn}?clinic_id={clinic_id}"
+        webhook_url = f"https://{RENDER_APP_HOSTNAME}/twilio/incoming_call?mrn={mrn}&clinic_id={clinic_id}"
         log.info(f"Initiating outbound call via Twilio to {patient_number} (Clinic {clinic_id}, MRN {mrn})")
         log.info(f"Twilio will POST to webhook on answer: {webhook_url}")
 
