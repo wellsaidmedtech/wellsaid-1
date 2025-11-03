@@ -5,10 +5,10 @@ import websockets
 import json
 import logging
 import audioop
+import redis
 import base64
 import wave
 import io
-import random
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, JSONResponse
 from twilio.twiml.voice_response import VoiceResponse, Connect
@@ -22,6 +22,28 @@ from firebase_admin import credentials, firestore
 # Added function name and line number to logs for better debugging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [%(funcName)s:%(lineno)d] %(message)s")
 log = logging.getLogger(__name__)
+
+# Initialize Redis Client & Hostname
+REDIS_URL = os.getenv("REDIS_URL")
+RENDER_EXTERNAL_HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME") 
+
+if not RENDER_EXTERNAL_HOSTNAME:
+    logging.warning("RENDER_EXTERNAL_HOSTNAME not set. WebSocket URLs may be incorrect if behind a proxy.")
+
+if not REDIS_URL:
+    logging.error("REDIS_URL not found. App will fail in multi-worker environment.")
+    # Fallback for local testing, but not production-safe
+    active_connections_local = {} 
+    redis_client = None
+else:
+    try:
+        redis_client = redis.from_url(REDIS_URL)
+        redis_client.ping()
+        logging.info("Successfully connected to Redis.")
+    except Exception as e:
+        logging.error(f"Could not connect to Redis: {e}. App will fail in multi-worker environment.")
+        redis_client = None
+        active_connections_local = {} # Fallback
 
 # --- FastAPI App Initialization ---
 app = FastAPI()
@@ -87,6 +109,69 @@ except Exception as e:
 # }
 # log.info(f"Loaded dummy patient 'Lon Kai' with MRN: {patient_mrn}")
 
+# --- Redis/Local Connection Management ---
+
+def set_connection_details(call_sid, details):
+    """Saves connection details to Redis (or local dict) with an expiration."""
+    details_serializable = {
+        "system_prompt": details.get("system_prompt"),
+        "doc_ref_path": details.get("doc_ref").path, # Store path, not object
+        "encounter_date": details.get("encounter_date")
+    }
+    details_json_string = json.dumps(details_serializable)
+    
+    if redis_client:
+        try:
+            redis_client.setex(call_sid, 3600, details_json_string.encode('utf-8'))
+        except Exception as e:
+            logging.error(f"Redis setex failed: {e}")
+    else:
+        active_connections_local[call_sid] = details_json_string # No expiration in local fallback
+
+def get_connection_details(call_sid):
+    """Retrieves connection details from Redis (or local dict)."""
+    details_json_string = None
+    if redis_client:
+        try:
+            details_bytes = redis_client.get(call_sid)
+            if details_bytes:
+                details_json_string = details_bytes.decode('utf-8')
+        except Exception as e:
+            logging.error(f"Redis get failed: {e}")
+            return None
+    else:
+        details_json_string = active_connections_local.get(call_sid)
+        
+    if not details_json_string:
+        # NOTE: This log line is critical
+        logging.error(f"No connection details found for CallSid {call_sid} in Redis/cache.")
+        return None
+        
+    try:
+        details_serializable = json.loads(details_json_string)
+        doc_ref = db.document(details_serializable["doc_ref_path"]) # Recreate doc_ref from path
+        
+        return {
+            "system_prompt": details_serializable.get("system_prompt"),
+            "doc_ref": doc_ref,
+            "encounter_date": details_serializable.get("encounter_date")
+        }
+    except Exception as e:
+        logging.error(f"Failed to deserialize connection details: {e}")
+        return None
+
+def del_connection_details(call_sid):
+    """Deletes connection details from Redis (or local dict)."""
+    if redis_client:
+        try:
+            redis_client.delete(call_sid)
+        except Exception as e:
+            logging.error(f"Redis delete failed: {e}")
+    else:
+        if call_sid in active_connections_local:
+            del active_connections_local[call_sid]
+
+
 # --- Patient Lookup Function ---
 def get_patient_doc_ref(clinic_id, mrn):
     """Fetches a patient's Firestore document reference. (SYNC)"""
@@ -104,6 +189,7 @@ def get_patient_doc_ref(clinic_id, mrn):
         logging.error(f"Error fetching patient doc ref: {e}")
         return None
 
+# --- Prompt and Context Management ---
 def fetch_prompts(prompt_ids):
     """Fetches a list of prompts from the prompt_library collection. (SYNC)"""
     if not db:
@@ -308,6 +394,13 @@ async def handle_incoming_call(request: Request):
         
         system_prompt = generate_system_prompt(base_prompt, patient_data, call_purpose)
 
+        # Store connection details in Redis (or local dict)
+        set_connection_details(call_sid, {
+            "system_prompt": system_prompt,
+            "doc_ref": doc_ref,
+            "encounter_date": encounter_date
+        })
+
         # # --- 1. Identify Patient (using MRN) ---
         # patient_data = get_patient_info_by_mrn(mrn)
         # if not patient_data:
@@ -345,13 +438,17 @@ async def handle_incoming_call(request: Request):
 
         log.info(f"WebSocket connection to Hume EVI established. CallSid: {call_sid}")
 
+        
         active_connections[call_sid] = {
             "hume_ws": hume_websocket,
             "twilio_ws": None,
             "stream_sid": None,
             "resample_state": None,
             "transcript": [],
-            "is_interrupted": False
+            "is_interrupted": False,
+            "system_prompt": system_prompt,
+            "doc_ref": doc_ref,
+            "encounter_date": encounter_date
         }
 
         # --- 3. Send Initial Settings (with VARIABLES and TOOL) ---
@@ -409,8 +506,8 @@ async def handle_incoming_call(request: Request):
         #      response = VoiceResponse(); response.say("AI connection lost early."); response.hangup()
         #      return Response(content=str(response), media_type="text/xml", status_code=200)
 
-        # # Start the background listener task *only after* settings are sent successfully
-        # asyncio.create_task(listen_to_hume(call_sid))
+        # Start the background listener task *only after* settings are sent successfully
+        asyncio.create_task(listen_to_hume(call_sid))
 
     except Exception as e:
         log.error(f"Unexpected error in handle_incoming_call for CallSid {call_sid}: {e}", exc_info=True)
@@ -421,7 +518,7 @@ async def handle_incoming_call(request: Request):
     # --- 4. Respond to Twilio with TwiML to start <Stream> ---
     response = VoiceResponse()
     connect = Connect()
-    stream_url = f"wss://{RENDER_APP_HOSTNAME}/twilio/audiostream/{call_sid}"
+    stream_url = f"wss://{RENDER_APP_HOSTNAME}/twilio/media/{call_sid}"
     log.info(f"Telling Twilio to stream audio to: {stream_url}. CallSid: {call_sid}")
     connect.stream(url=stream_url)
     response.append(connect)
@@ -429,21 +526,25 @@ async def handle_incoming_call(request: Request):
     log.info(f"Responding to Twilio with TwiML <Connect><Stream>. CallSid: {call_sid}")
     return Response(content=str(response), media_type="text/xml", status_code=200)
 
-
 # --- WebSocket Endpoint for Twilio Audio Stream ---
-@app.websocket("/twilio/audiostream/{call_sid}")
+@app.websocket("/twilio/media/{call_sid}")
 async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
     """
     Receives audio (mu-law) from Twilio, transcodes, forwards to Hume.
     """
-    connection_details = active_connections.get(call_sid)
-    if not connection_details or not connection_details.get("hume_ws"):
+    connection_details = active_connections.get(call_sid) # old
+    # connection_details = get_connection_details(call_sid)   # new
+
+    if not connection_details:
         log.error(f"Twilio WS connected, but no active Hume connection found for CallSid: {call_sid}. Closing immediately.")
         return
 
+    
     try:
         await websocket.accept()
         log.info(f"Twilio WebSocket accepted for CallSid: {call_sid}")
+
+
         connection_details["twilio_ws"] = websocket # Store WS only after accept
         hume_ws = connection_details["hume_ws"]
 
@@ -469,7 +570,7 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
             if event == "start":
                 stream_sid = data.get("start", {}).get("streamSid")
                 if stream_sid:
-                    connection_details["stream_sid"] = stream_sid
+                    # connection_details["stream_sid"] = stream_sid
                     log.info(f"Twilio 'start' message received, Stream SID: {stream_sid}. CallSid: {call_sid}")
                 
                     # Now that Twilio is fully ready, send the initial prompt to Hume.
@@ -482,14 +583,14 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
                             "audio": { "encoding": "linear16", "sample_rate": 8000, "channels": 1 },
                             "voice_id": "97fe9008-8584-4d56-8453-bd8c7ead3663",
                             "system_prompt": system_prompt
-                        }
+                        } 
                         try:
                             await hume_ws.send(json.dumps(initial_message))
                             log.info(f"Sent session_settings to Hume EVI. CallSid: {call_sid}")
                         except Exception as e:
                             log.error(f"Error sending session_settings to Hume after Twilio start: {e}", exc_info=True)
                     elif not system_prompt:
-                         log.error(f"Twilio started, but no system_prompt found in active_connections. CallSid: {call_sid}")
+                         log.error(f"Twilio started, but no system_prompt found in initial_message. CallSid: {call_sid}")
                 
                 else:
                     log.warning(f"Twilio 'start' message missing streamSid. CallSid: {call_sid}")
@@ -551,9 +652,9 @@ async def listen_to_hume(call_sid: str):
             log.error(f"listen_to_hume: Hume WS not found or already closed for {call_sid} at start. Task exiting.")
             return
 
-        hume_ws = connection_details["hume_ws"]
-        transcript = connection_details.get("transcript", [])
-        is_interrupted = connection_details.get("is_interrupted", False)
+        # hume_ws = connection_details["hume_ws"]
+        # transcript = connection_details.get("transcript", [])
+        # is_interrupted = connection_details.get("is_interrupted", False)
 
 
         async for message_str in hume_ws:
