@@ -14,8 +14,6 @@ from firebase_admin import credentials, firestore
 from dotenv import load_dotenv
 
 # --- Hume Imports ---
-from hume.empathic_voice.chat.audio.microphone_interface import MicrophoneInterface
-from hume import Stream
 from hume.client import AsyncHumeClient
 from hume.empathic_voice.chat.socket_client import ChatConnectOptions, SubscribeEvent, AsyncChatSocketClient
 from hume.core.api_error import ApiError
@@ -56,7 +54,6 @@ HUME_SECRET_KEY = os.getenv("HUME_SECRET_KEY")
 if not all([HUME_API_KEY, HUME_SECRET_KEY]):
     logging.error("Hume AI credentials missing. Check environment variables.")
 hume_client = AsyncHumeClient(api_key=HUME_API_KEY)
-hume_stream = Stream.new()
 
 # 6. Initialize Redis Client & Hostname
 REDIS_URL = os.getenv("REDIS_URL")
@@ -263,8 +260,6 @@ class EviHandler:
     This class handles the bi-directional streaming between Twilio and Hume EVI.
     It's created for each call and manages the callbacks from the Hume WebSocket.
     """
-
-
     def __init__(self, twilio_ws: WebSocket, hume_socket: AsyncChatSocketClient, call_sid: str, transcript_list: list):
         self.twilio_ws = twilio_ws
         self.hume_socket = hume_socket
@@ -291,33 +286,29 @@ class EviHandler:
                 self.transcript.append(f"Assistant: {message.message.content}")
             
             elif message.type == "audio_output":
-                await hume_stream.put(
-                    base64.b64decode(message.data.encode("utf-8"))
-                )
-
-                # # --- AUDIO FIX: Convert Hume's PCM audio back to Twilio's mu-law ---
-                # # 1. Get base64 PCM audio from Hume
-                # pcm_b64 = message.data
+                # --- AUDIO FIX: Convert Hume's PCM audio back to Twilio's mu-law ---
+                # 1. Get base64 PCM audio from Hume
+                pcm_b64 = message.data
                 
-                # # 2. Decode it into raw PCM-16 bytes
-                # pcm_bytes = base64.b64decode(pcm_b64)
+                # 2. Decode it into raw PCM-16 bytes
+                pcm_bytes = base64.b64decode(pcm_b64)
                 
-                # # 3. Convert PCM-16 bytes back to mu-law bytes
-                # # '2' is the width (2 bytes for 16-bit)
-                # mulaw_bytes = audioop.lin2ulaw(pcm_bytes, 2)
+                # 3. Convert PCM-16 bytes back to mu-law bytes
+                # '2' is the width (2 bytes for 16-bit)
+                mulaw_bytes = audioop.lin2ulaw(pcm_bytes, 2)
                 
-                # # 4. Re-encode the new mu-law bytes into base64
-                # mulaw_b64 = base64.b64encode(mulaw_bytes).decode('utf-8')
+                # 4. Re-encode the new mu-law bytes into base64
+                mulaw_b64 = base64.b64encode(mulaw_bytes).decode('utf-8')
                 
-                # # 5. Format for Twilio Media Stream
-                # response_json = {
-                #     "event": "media",
-                #     "streamSid": self.call_sid, 
-                #     "media": {
-                #         "payload": mulaw_b64 # <-- Send corrected audio format
-                #     }
-                # }
-                # await self.twilio_ws.send_text(json.dumps(response_json))
+                # 5. Format for Twilio Media Stream
+                response_json = {
+                    "event": "media",
+                    "streamSid": self.call_sid, 
+                    "media": {
+                        "payload": mulaw_b64 # <-- Send corrected audio format
+                    }
+                }
+                await self.twilio_ws.send_text(json.dumps(response_json))
             
             elif message.type == "user_interruption":
                 logging.info(f"Hume detected user interruption for {self.call_sid}. Clearing Twilio audio queue.")
@@ -425,18 +416,7 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
             
             # The Hume listener is already running (managed by connect_with_callbacks).
             # We only need to create and await our Twilio listener.
-            # twilio_listener_task = asyncio.create_task(handler.handle_twilio_audio())
-
-            # My own code
-            twilio_listener_task =  asyncio.create_task(
-                MicrophoneInterface.start(
-                    socket,
-                    allow_user_interrupt=True,
-                    byte_stream=hume_stream
-                )
-            )
-
-            logging.info(f"DEBUG: Twilio listener setup successful for {call_sid}")
+            twilio_listener_task = asyncio.create_task(handler.handle_twilio_audio())
             
             await twilio_listener_task
 
