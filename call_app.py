@@ -358,10 +358,9 @@ async def handle_incoming_call(request: Request):
 
         initial_message = {
             "type": "session_settings",
-            "context": "You are a helpful AI agent.",
+            "context": { "text": "You are a helpful AI agent."},
             "audio": { "encoding": "linear16", "sample_rate": 8000, "channels": 1 },
-            "voice": { "id": "97fe9008-8584-4d56-8453-bd8c7ead3663", "provider": "HUME_AI" },
-            "evi_version": "3",
+            "voice_id": "97fe9008-8584-4d56-8453-bd8c7ead3663",
             "system_prompt": system_prompt
         }
 
