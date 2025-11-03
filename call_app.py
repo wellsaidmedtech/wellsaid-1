@@ -219,7 +219,7 @@ def generate_system_prompt(base_prompt: str, patient_data: dict, call_purpose: s
     # --- 1. Prepare your data ---
     
     # Simple values (use .get() for safety, providing a fallback)
-    patient_name = patient_data.get("full_name", "the patient")
+    patient_name = patient_data.get("name", "the patient")
     patient_dob = patient_data.get("dob", "not specified")
     
     # --- 2. Format the complex data (like medications) ---
@@ -322,6 +322,7 @@ async def root():
 # --- Endpoint to Initiate Outbound Call ---
 class StartCallRequest(BaseModel):
     mrn: str
+    clinic_id: str
 
 @app.post("/api/start_call")
 async def start_outbound_call(call_request: StartCallRequest):
@@ -332,7 +333,7 @@ async def start_outbound_call(call_request: StartCallRequest):
 
     clinic_id = call_request.clinic_id
     mrn = call_request.mrn
-    log.info(f"Received request to call patient with MRN: {mrn}")
+    log.info(f"Received request to call patient from clinic ID: {clinic_id} with MRN: {mrn}")
 
     if not twilio_client:
         log.error("Cannot place call: Twilio client is not initialized.")
@@ -402,7 +403,7 @@ async def handle_incoming_call(request: Request):
              response = VoiceResponse(); response.say("System configuration error."); response.hangup()
              return Response(content=str(response), media_type="text/xml", status_code=200)
 
-        log.info(f"CallSid: {call_sid}, Patient Number: {from_number}, MRN from URL: {mrn}")
+        log.info(f"CallSid: {call_sid}, Patient Number: {from_number}, Clinic ID: {clinic_id}, MRN from URL: {mrn}")
 
         doc_ref = get_patient_doc_ref(clinic_id, mrn)
         if not doc_ref:
