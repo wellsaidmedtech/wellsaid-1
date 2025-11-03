@@ -3,3 +3,4 @@ venv/
 
 seed_firestore.py
 firebase-key.json
+firebase-key-old.json

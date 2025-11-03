@@ -1,252 +1,293 @@
+<!-- templates/dashboard.html -->
 <!DOCTYPE html>
-<html lang="en" class="h-full bg-gray-100">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard - WellSaid AI Demo</title>
+    <title>Dashboard - WellSaid AI</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style type="text/tailwindcss">
-        /* Custom styles for buttons */
+        @layer base {
+            input[type="text"], input[type="date"], select {
+                @apply w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500;
+            }
+            label {
+                @apply block text-sm font-medium text-gray-700 mb-1;
+            }
+        }
         @layer components {
             .btn {
-                @apply font-bold py-2 px-4 rounded-lg shadow transition-all duration-150 ease-in-out;
+                @apply inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white focus:outline-none focus:ring-2 focus:ring-offset-2;
             }
-            .btn-primary {
-                @apply bg-blue-600 text-white hover:bg-blue-700 active:bg-blue-800;
+            .btn-blue {
+                @apply bg-blue-600 hover:bg-blue-700 focus:ring-blue-500;
             }
-            .btn-secondary {
-                @apply bg-gray-200 text-gray-800 hover:bg-gray-300 active:bg-gray-400;
+            .btn-red {
+                @apply bg-red-600 hover:bg-red-700 focus:ring-red-500;
             }
-            .btn-success {
-                @apply bg-green-600 text-white hover:bg-green-700;
+            .btn-gray {
+                @apply bg-gray-600 hover:bg-gray-700 focus:ring-gray-500;
             }
-            .btn-danger {
-                @apply bg-red-600 text-white hover:bg-red-700;
+            .btn-green {
+                @apply bg-green-600 hover:bg-green-700 focus:ring-green-500;
             }
-            .btn-link {
-                @apply text-blue-600 hover:text-blue-800 hover:underline;
+            .card {
+                @apply bg-white shadow-lg rounded-lg overflow-hidden;
             }
-
-            /* Form Input Styles */
-            .form-input {
-                @apply block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-blue-600 sm:text-sm sm:leading-6;
+            .card-header {
+                @apply bg-gray-50 border-b border-gray-200 px-6 py-4;
             }
-            .form-select {
-                @apply block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 focus:ring-2 focus:ring-inset focus:ring-blue-600 sm:text-sm sm:leading-6;
-            }
-            .form-label {
-                @apply block text-sm font-medium leading-6 text-gray-900;
+            .card-content {
+                @apply p-6;
             }
         }
     </style>
 </head>
-<body class="h-full font-sans antialiased">
-    <div class="min-h-full">
-        <!-- Header -->
-        <header class="bg-white shadow-sm">
-            <nav class="container mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
-                <!-- FIX: Title is now "WellSaid AI Demo" and links to the dashboard -->
-                <a href="{{ url_for('dashboard') }}" class="text-2xl font-bold text-gray-900">WellSaid AI Demo</a>
-                <div class="flex items-center space-x-4">
-                    <a href="{{ url_for('admin_prompts') }}" class="btn-link">Prompt Editor</a>
-                    <a href="{{ url_for('create_patient') }}" class="btn btn-primary">Create Patient</a>
+<body class="bg-gray-100 font-sans leading-normal tracking-normal">
+
+    <header class="bg-white shadow-md">
+        <nav class="container mx-auto px-6 py-4 flex justify-between items-center">
+            <a href="{{ url_for('dashboard') }}" class="text-2xl font-bold text-blue-600">WellSaid AI Demo</a>
+            <div class="flex space-x-4">
+                <a href="{{ url_for('create_patient') }}" class="btn btn-blue">Create Patient</a>
+                <a href="{{ url_for('admin_prompts') }}" class="btn btn-gray">Prompt Editor</a>
+            </div>
+        </nav>
+    </header>
+
+    <main class="container mx-auto px-6 py-8">
+
+        <!-- Flash Messages -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            <div class="mb-4">
+              {% for category, message in messages %}
+                <div class="px-4 py-3 rounded-md relative {{ 'bg-red-100 border border-red-400 text-red-700' if category == 'error' else 'bg-blue-100 border border-blue-400 text-blue-700' }}" role="alert">
+                  <span class="block sm:inline">{{ message }}</span>
                 </div>
-            </nav>
-        </header>
+              {% endfor %}
+            </div>
+          {% endif %}
+        {% endwith %}
 
-        <!-- Main Content -->
-        <main class="py-10">
-            <div class="container mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+        <!-- Server Tools Card -->
+        <div class="card mb-8">
+            <div class="card-content flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                <div class="flex-1">
+                    <label for="demo-phone-override">Demo Phone Override</label>
+                    <input type="text" id="demo-phone-override" placeholder="Enter your phone # to receive calls (e.g., +15551234567)">
+                    <p class="text-xs text-gray-500 mt-1">If filled, all calls will be routed to this number.</p>
+                </div>
+                <div class="md:ml-6">
+                    <button id="wake-up-btn" class="btn btn-green w-full md:w-auto" onclick="wakeUpServer()">
+                        Wake Up Server
+                    </button>
+                    <p id="wake-up-status" class="text-xs text-gray-500 text-center md:text-left mt-1 h-4"></p>
+                </div>
+            </div>
+        </div>
 
-                <!-- Flash Messages -->
-                {% with messages = get_flashed_messages(with_categories=true) %}
-                    {% if messages %}
-                        <div class="mb-4">
-                        {% for category, message in messages %}
-                            <div class="rounded-md p-4 {{ 'bg-red-100 border-red-400 text-red-700' if category == 'danger' else 'bg-green-100 border-green-400 text-green-700' if category == 'success' else 'bg-blue-100 border-blue-400 text-blue-700' }}" role="alert">
-                                <p class="font-bold"><strong>{{ category.title() }}</strong></p>
-                                <p>{{ message }}</p>
-                            </div>
-                        {% endfor %}
-                        </div>
-                    {% endif %}
-                {% endwith %}
-
-                <!-- Filters -->
-                <div class="bg-white p-6 rounded-lg shadow mb-6">
-                    <form method="GET" action="{{ url_for('dashboard') }}" class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <!-- Patient List Card -->
+        <div class="card">
+            <div class="card-header flex justify-between items-center">
+                <h2 class="text-2xl font-bold text-gray-800">Patient Dashboard</h2>
+            </div>
+            <div class="card-content p-0">
+                <!-- Filter Form -->
+                <form method="GET" action="{{ url_for('dashboard') }}" class="p-6 border-b border-gray-200">
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
                         <div>
-                            <label for="patient_name" class="form-label">Patient Name</label>
-                            <input type="text" name="patient_name" id="patient_name" value="{{ patient_name }}" class="form-input" placeholder="e.g., Matt Damon">
+                            <label for="name_filter">Name</label>
+                            <input type="text" id="name_filter" name="name" value="{{ request.args.get('name', '') }}">
                         </div>
                         <div>
-                            <label for="clinic_id" class="form-label">Clinic</label>
-                            <select name="clinic_id" id="clinic_id" class="form-select">
+                            <label for="clinic_filter">Clinic</label>
+                            <select id="clinic_filter" name="clinic_id">
                                 <option value="">All Clinics</option>
-                                {% for clinic in clinics %}
-                                    <option value="{{ clinic.id }}" {% if clinic.id == selected_clinic %}selected{% endif %}>{{ clinic.name }}</option>
+                                {% for id, clinic in all_clinics.items() %}
+                                    <option value="{{ id }}" {% if id == request.args.get('clinic_id') %}selected{% endif %}>{{ clinic.clinic_name }}</option>
                                 {% endfor %}
                             </select>
                         </div>
                         <div class="self-end">
-                            <button type="submit" class="btn btn-primary w-full sm:w-auto">Apply Filter</button>
+                            <button type="submit" class="btn btn-blue w-full sm:w-auto">Apply Filter</button>
+                            <a href="{{ url_for('dashboard') }}" class="btn btn-gray w-full sm:w-auto mt-2 sm:mt-0">Clear</a>
                         </div>
-                    </form>
-                </div>
-
-                <!-- Server Tools -->
-                <div class="bg-white p-6 rounded-lg shadow mb-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                    <div class="flex-1 w-full sm:w-auto">
-                        <label for="phone_override" class="form-label">Demo Phone Override</label>
-                        <input type="tel" id="phone_override" class="form-input" placeholder="Enter your phone # to receive calls (e.g., +15551234567)">
                     </div>
-                    <div class="w-full sm:w-auto flex-shrink-0">
-                         <label class="form-label invisible hidden sm:block">Server Status</label>
-                        <button id="wake-up-btn" type="button" class="btn btn-secondary w-full">
-                            Wake Up Server
-                        </button>
-                    </div>
-                </div>
+                </form>
 
-                <!-- Patient List -->
-                <div class="bg-white shadow sm:rounded-lg overflow-hidden">
-                    <div class="overflow-x-auto">
-                        <table class="min-w-full divide-y divide-gray-200">
-                            <thead class="bg-gray-50">
-                                <tr>
-                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
-                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">MRN</th>
-                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">DOB</th>
-                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Phone</th>
-                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Next Action</th>
-                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody class="bg-white divide-y divide-gray-200">
-                                {% if patients %}
-                                    {% for patient in patients %}
-                                        <tr>
-                                            <td class="px-6 py-4 whitespace-nowrap">
-                                                <!-- FIX: This link should now work correctly. -->
-                                                <a href="{{ url_for('patient_detail', clinic_id=patient.clinic_id, mrn=patient.mrn) }}" class="text-sm font-medium text-blue-600 hover:text-blue-800">
-                                                    {{ patient.name }}
-                                                </a>
-                                            </td>
-                                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ patient.mrn }}</td>
-                                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ patient.dob }}</td>
-                                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ patient.phone }}</td>
-                                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                                {% if patient.next_action.date %}
-                                                    <span class="font-medium">{{ patient.next_action.date }}</span>
-                                                    <span class="block text-xs text-gray-400">{{ patient.next_action.purpose }}</span>
-                                                {% else %}
-                                                    <span class="text-gray-400">{{ patient.next_action.purpose }}</span>
-                                                {% endif %}
-                                            </td>
-                                            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
-                                                <!-- Call Patient Form -->
-                                                <form action="{{ url_for('call_patient') }}" method="GET" class="inline-block call-patient-form">
-                                                    <input type="hidden" name="phone" value="{{ patient.phone }}">
-                                                    <input type="hidden" name="mrn" value="{{ patient.mrn }}">
-                                                    <input type="hidden" name="clinic_id" value="{{ patient.clinic_id }}">
-                                                    <button type="submit" class="btn btn-primary btn-sm !py-1 !px-2">
-                                                        Call
-                                                    </button>
-                                                </form>
-                                                <!-- Edit Patient Link -->
-                                                <a href="{{ url_for('edit_patient', clinic_id=patient.clinic_id, mrn=patient.mrn) }}" class="btn btn-secondary btn-sm !py-1 !px-2">
-                                                    Edit
-                                                </a>
-                                            </td>
-                                        </tr>
-                                    {% endfor %}
-                                {% else %}
+                <!-- Patient Table -->
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Patient (MRN)</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Clinic</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Phone</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Next Action</th>
+                                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200">
+                            
+                            <!-- 
+                              FIX: Add logic to check if 'patients' is a dictionary (default) 
+                              or a list (when a name filter is applied).
+                            -->
+                            
+                            {% if patients.items %}
+                                <!-- DICTIONARY View: No filter or clinic filter -->
+                                {% for clinic_id, clinic_patients in patients.items() %}
+                                    {% for mrn, patient in clinic_patients.items() %}
                                     <tr>
-                                        <td colspan="6" class="px-6 py-4 text-center text-gray-500">
-                                            No patients found.
+                                        <td class="px-6 py-4 whitespace-nowrap">
+                                            <div class="text-sm font-medium text-blue-600 hover:text-blue-800">
+                                                <a href="{{ url_for('patient_detail', clinic_id=clinic_id, mrn=mrn) }}">{{ patient.name }}</a>
+                                            </div>
+                                            <div class="text-sm text-gray-500">{{ mrn }}</div>
+                                        </td>
+                                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                                            {{ all_clinics[clinic_id].clinic_name if all_clinics[clinic_id] else 'N/A' }}
+                                        </td>
+                                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{{ patient.phone }}</td>
+                                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                                            {% if patient.next_action %}
+                                                <div>{{ patient.next_action.purpose }}</div>
+                                                <div class="text-xs text-gray-500">{{ patient.next_action.date }} ({{ patient.next_action.type }})</div>
+                                            {% else %}
+                                                <span class="text-xs text-gray-400">No scheduled actions</span>
+                                            {% endif %}
+                                        </td>
+                                        <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
+                                            <button onclick="initiateCall('{{ patient.phone }}', '{{ mrn }}', '{{ clinic_id }}')" class="btn btn-blue text-xs">
+                                                Call Patient
+                                            </button>
+                                            <a href="{{ url_for('edit_patient', clinic_id=clinic_id, mrn=mrn) }}" class="btn btn-gray text-xs">Edit</a>
                                         </td>
                                     </tr>
-                                {% endif %}
-                            </tbody>
-                        </table>
-                    </div>
+                                    {% endfor %}
+                                {% endfor %}
+                            {% else %}
+                                <!-- LIST View: Name filter was applied -->
+                                {% for patient in patients %}
+                                <tr>
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <div class="text-sm font-medium text-blue-600 hover:text-blue-800">
+                                            <!-- The Python code adds 'clinic_id' and 'mrn' to the patient object when filtering by name -->
+                                            <a href="{{ url_for('patient_detail', clinic_id=patient.clinic_id, mrn=patient.mrn) }}">{{ patient.name }}</a>
+                                        </div>
+                                        <div class="text-sm text-gray-500">{{ patient.mrn }}</div>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                                        {{ all_clinics[patient.clinic_id].clinic_name if all_clinics[patient.clinic_id] else 'N/A' }}
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{{ patient.phone }}</td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                                        {% if patient.next_action %}
+                                            <div>{{ patient.next_action.purpose }}</div>
+                                            <div class="text-xs text-gray-500">{{ patient.next_action.date }} ({{ patient.next_action.type }})</div>
+                                        {% else %}
+                                            <span class="text-xs text-gray-400">No scheduled actions</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
+                                        <button onclick="initiateCall('{{ patient.phone }}', '{{ patient.mrn }}', '{{ patient.clinic_id }}')" class="btn btn-blue text-xs">
+                                            Call Patient
+                                        </button>
+                                        <a href="{{ url_for('edit_patient', clinic_id=patient.clinic_id, mrn=patient.mrn) }}" class="btn btn-gray text-xs">Edit</a>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            {% endif %}
+                            
+                            {% if not patients %}
+                                <!-- This handles both empty lists and empty dicts -->
+                                <tr>
+                                    <td colspan="5" class="px-6 py-4 text-center text-gray-500">
+                                        No patients found. <a href="{{ url_for('dashboard') }}" class="text-blue-500 hover:underline">Clear filter?</a>
+                                    </td>
+                                </tr>
+                            {% endif %}
+                        </tbody>
+                    </table>
                 </div>
             </div>
-        </main>
-    </div>
+        </div>
+
+    </main>
+
+    <!-- 
+      FIX: Hidden form to submit calls via POST.
+      This form is invisible. The JavaScript 'initiateCall' function
+      will fill its fields and then 'submit()' it, which sends a 
+      POST request instead of a GET request.
+    -->
+    <form id="call-form" action="{{ url_for('call_patient') }}" method="POST" style="display: none;">
+        <input type="hidden" id="call-phone" name="phone">
+        <input type="hidden" id="call-mrn" name="mrn">
+        <input type="hidden" id="call-clinic-id" name="clinic_id">
+        <input type="hidden" id="call-phone-override" name="phone_override">
+    </form>
+
 
     <script>
-        // Server Wake-Up Function
-        const wakeUpBtn = document.getElementById('wake-up-btn');
-        const renderUrl = "{{ render_url }}"; // Get URL from Jinja
+        const RENDER_BACKEND_URL = "{{ render_backend_url | safe }}";
 
-        async function wakeUpServer() {
-            if (!renderUrl) {
-                wakeUpBtn.textContent = 'Backend URL Not Set';
-                wakeUpBtn.classList.remove('btn-secondary');
-                wakeUpBtn.classList.add('btn-danger');
-                return;
-            }
+        function wakeUpServer() {
+            const btn = document.getElementById('wake-up-btn');
+            const status = document.getElementById('wake-up-status');
             
-            wakeUpBtn.textContent = 'Pinging...';
-            wakeUpBtn.disabled = true;
+            btn.disabled = true;
+            btn.classList.remove('btn-green');
+            btn.classList.add('btn-gray');
+            status.textContent = 'Pinging server...';
 
-            try {
-                // We add the /wake-up endpoint we created
-                const response = await fetch(`${renderUrl}/wake-up`);
-                
-                if (response.ok) {
-                    wakeUpBtn.textContent = 'Server Awake';
-                    wakeUpBtn.classList.remove('btn-secondary', 'btn-danger');
-                    wakeUpBtn.classList.add('btn-success');
-                } else {
-                    throw new Error(`Server responded with ${response.status}`);
-                }
-            } catch (error) {
-                console.error('Wake-up ping failed:', error);
-                wakeUpBtn.textContent = 'Ping Failed';
-                wakeUpBtn.classList.remove('btn-secondary', 'btn-success');
-                wakeUpBtn.classList.add('btn-danger');
-            } finally {
-                wakeUpBtn.disabled = false;
-                setTimeout(() => {
-                    wakeUpBtn.textContent = 'Wake Up Server';
-                    wakeUpBtn.classList.remove('btn-success', 'btn-danger');
-                    wakeUpBtn.classList.add('btn-secondary');
-                }, 4000);
-            }
-        }
-
-        wakeUpBtn.addEventListener('click', wakeUpServer);
-
-        // Call Override Function
-        const phoneOverrideInput = document.getElementById('phone_override');
-        // Get all forms with the specific action
-        const callForms = document.querySelectorAll('form[action="{{ url_for("call_patient") }}"]');
-
-        callForms.forEach(form => {
-            form.addEventListener('submit', function(event) {
-                // Stop the form from submitting immediately
-                event.preventDefault(); 
-                
-                const overrideValue = phoneOverrideInput.value.trim();
-                
-                if (overrideValue) {
-                    // If there's an override, add it as a new hidden input
-                    let overrideInput = form.querySelector('input[name="phone_override"]');
-                    if (!overrideInput) {
-                        overrideInput = document.createElement('input');
-                        overrideInput.type = 'hidden';
-                        overrideInput.name = 'phone_override';
-                        form.appendChild(overrideInput);
+            fetch(RENDER_BACKEND_URL + '/wake-up', { method: 'GET' })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`Server responded with ${response.status}`);
                     }
-                    overrideInput.value = overrideValue;
-                }
-                
-                // Now, submit the form with the (potentially) added override
-                form.submit();
-            });
-        });
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.status === 'awake') {
+                        status.textContent = 'Server is awake!';
+                        btn.classList.add('btn-green');
+                        btn.classList.remove('btn-gray');
+                    } else {
+                        throw new Error('Unexpected response');
+                    }
+                })
+                .catch(error => {
+                    console.error('Wake-up call failed:', error);
+                    status.textContent = `Error: ${error.message}`;
+                    btn.classList.add('btn-red');
+                    btn.classList.remove('btn-gray');
+                })
+                .finally(() => {
+                    btn.disabled = false;
+                });
+        }
+        
+        /*
+          FIX: Updated JavaScript to use the hidden POST form.
+          This function now finds the hidden form, populates its
+          input fields, and then calls .submit() to send a
+          POST request, which fixes the 405 Method Not Allowed error.
+        */
+        function initiateCall(phone, mrn, clinicId) {
+            const overridePhone = document.getElementById('demo-phone-override').value;
+            
+            // Find the hidden form and its inputs
+            const form = document.getElementById('call-form');
+            document.getElementById('call-phone').value = phone;
+            document.getElementById('call-mrn').value = mrn;
+            document.getElementById('call-clinic-id').value = clinicId;
+            document.getElementById('call-phone-override').value = overridePhone;
+            
+            // Submit the form
+            form.submit();
+        }
     </script>
 </body>
 </html>
