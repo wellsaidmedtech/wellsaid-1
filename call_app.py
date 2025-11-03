@@ -652,9 +652,9 @@ async def listen_to_hume(call_sid: str):
             log.error(f"listen_to_hume: Hume WS not found or already closed for {call_sid} at start. Task exiting.")
             return
 
-        # hume_ws = connection_details["hume_ws"]
-        # transcript = connection_details.get("transcript", [])
-        # is_interrupted = connection_details.get("is_interrupted", False)
+        hume_ws = connection_details["hume_ws"]
+        transcript = connection_details.get("transcript", [])
+        is_interrupted = connection_details.get("is_interrupted", False)
 
 
         async for message_str in hume_ws:
