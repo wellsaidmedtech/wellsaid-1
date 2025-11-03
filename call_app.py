@@ -15,8 +15,10 @@ from dotenv import load_dotenv
 
 # --- Hume Imports ---
 from hume.client import AsyncHumeClient
-from hume.empathic_voice.chat.socket_client import ChatConnectOptions, SubscribeEvent, AsyncChatSocketClient
+# --- FIX: Removed ChatConnectOptions ---
+from hume.empathic_voice.chat.socket_client import SubscribeEvent, AsyncChatSocketClient
 from hume.core.api_error import ApiError
+# --- FIX: Removed ChatConnectOptions ---
 from hume.empathic_voice.types import AudioInput 
 
 # --- Configuration & Initialization ---
@@ -390,19 +392,13 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
         
         logging.info(f"DEBUG: Attempting to connect to Hume EVI for {call_sid}...")
         
-        # Use the new ChatConnectOptions
-        options = ChatConnectOptions(
-            system_prompt=system_prompt,
-            secret_key=HUME_SECRET_KEY # Use the secret for auth
-        )
-        
-        # --- CRITICAL FIX: Refactor to match user's documentation ---
-        # Create the handler class *first*
+        # --- CRITICAL FIX: Create handler class *first* ---
         handler = EviHandler(websocket, None, call_sid, transcript) # Socket is None for now
 
-        # Use the new connect_with_callbacks method
+        # --- CRITICAL FIX: Pass kwargs to connect_with_callbacks, NOT 'options' ---
         async with hume_client.empathic_voice.chat.connect_with_callbacks(
-            options=options,
+            system_prompt=system_prompt,
+            secret_key=HUME_SECRET_KEY,
             on_open=handler.on_open,
             on_message=handler.on_message,
             on_close=handler.on_close,
