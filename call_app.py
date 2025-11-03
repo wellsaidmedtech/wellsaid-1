@@ -87,22 +87,7 @@ except Exception as e:
 # }
 # log.info(f"Loaded dummy patient 'Lon Kai' with MRN: {patient_mrn}")
 
-# --- Patient Lookup Functions ---
-def get_patient_info_by_phone(phone_number: str) -> dict | None:
-    if not phone_number: return None
-    for mrn, data in db.items():
-        if data.get("phone_number") == phone_number:
-            return {"mrn": mrn, **data}
-    return None
-
-def get_patient_info_by_mrn(mrn: str) -> dict | None:
-    if not mrn: return None
-    # data = DUMMY_PATIENT_DB.get(mrn)
-    data = db.get(mrn)
-    if data:
-        return {"mrn": mrn, **data}
-    return None
-
+# --- Patient Lookup Function ---
 def get_patient_doc_ref(clinic_id, mrn):
     """Fetches a patient's Firestore document reference. (SYNC)"""
     if not db:
@@ -219,6 +204,8 @@ async def start_outbound_call(call_request: StartCallRequest):
     Triggers an outbound call to a patient using their MRN.
     Passes the patient's MRN in the webhook URL.
     """
+
+    clinic_id = call_request.clinic_id
     mrn = call_request.mrn
     log.info(f"Received request to call patient with MRN: {mrn}")
 
@@ -226,10 +213,12 @@ async def start_outbound_call(call_request: StartCallRequest):
         log.error("Cannot place call: Twilio client is not initialized.")
         raise HTTPException(status_code=503, detail="Twilio client not available. Check server configuration.")
 
-    patient_data = get_patient_info_by_mrn(mrn)
-    if not patient_data:
-        log.error(f"Cannot place call: MRN {mrn} not found in database.")
-        raise HTTPException(status_code=404, detail="Patient MRN not found.")
+    doc_ref = get_patient_doc_ref(clinic_id, mrn)
+    if not doc_ref:
+        logging.error(f"Could not find patient doc ref for MRN {mrn}. CallSid: {call_sid}")
+        return Response(content=response.to_xml(), media_type="text/xml")
+
+    patient_data = doc_ref.get().to_dict()
     
     patient_number = patient_data.get("phone_number")
     if not patient_number:
@@ -237,8 +226,8 @@ async def start_outbound_call(call_request: StartCallRequest):
         raise HTTPException(status_code=400, detail="Patient record missing phone number.")
 
     try:
-        webhook_url = f"https://{RENDER_APP_HOSTNAME}/twilio/incoming_call?mrn={mrn}"
-        log.info(f"Initiating outbound call via Twilio to {patient_number} (MRN {mrn})")
+        webhook_url = f"https://{RENDER_APP_HOSTNAME}/twilio/incoming_call?mrn={mrn}?clinic_id={clinic_id}"
+        log.info(f"Initiating outbound call via Twilio to {patient_number} (Clinic {clinic_id}, MRN {mrn})")
         log.info(f"Twilio will POST to webhook on answer: {webhook_url}")
 
         call = twilio_client.calls.create(
@@ -254,7 +243,8 @@ async def start_outbound_call(call_request: StartCallRequest):
                 "message": "Call initiated successfully.",
                 "patient_called": patient_number,
                 "call_sid": call.sid,
-                "mrn_sent": mrn
+                "mrn_sent": mrn,
+                "clinic_id_sent": clinic_id
             }
         )
     except TwilioRestException as e:
@@ -280,6 +270,7 @@ async def handle_incoming_call(request: Request):
         call_sid = form_data.get('CallSid')
         from_number = form_data.get('From') # Patient's number
         mrn = request.query_params.get('mrn')
+        clinic_id = request.query_params.get("clinic_id")
 
         if not call_sid or not mrn:
              log.error(f"Missing CallSid or MRN in request. CallSid: {call_sid}, MRN: {mrn}")
