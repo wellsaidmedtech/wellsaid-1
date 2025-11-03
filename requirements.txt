@@ -8,6 +8,5 @@ twilio==9.8.5
 firebase-admin==7.1.0
 hume==0.13.0
 hume[microphone]==0.13.0
-pyaudio
 redis==7.0.1
 google-cloud-firestore==2.21.0
