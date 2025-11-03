@@ -396,7 +396,7 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
         handler = EviHandler(websocket, None, call_sid, transcript) # Socket is None for now
 
         # --- CRITICAL FIX: Pass kwargs to connect_with_callbacks, NOT 'options' ---
-        async with hume_client.empathic_voice.chat.connect_with_callbacks(
+        async with hume_client.empathic_voice.chat.connect(
             system_prompt=system_prompt,
             secret_key=HUME_SECRET_KEY,
             on_open=handler.on_open,
