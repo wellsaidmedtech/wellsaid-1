@@ -213,7 +213,7 @@ def fetch_prompts(prompt_ids):
 def generate_system_prompt(base_prompt, patient_data, purpose):
     """Generates a dynamic system prompt based on call purpose and patient data. (SYNC)"""
     system_prompt = base_prompt.replace("[Patient Name]", patient_data.get("name", "the patient"))
-    
+
     kb_doc_id = ""
     if purpose == "medication adherence" or purpose == "medication follow-up":
         kb_doc_id = "kb_medication_adherence"
@@ -237,7 +237,8 @@ def generate_system_prompt(base_prompt, patient_data, purpose):
         proc = ", ".join(patient_data.get("procedures_history", [])) or "your recent procedure"
         system_prompt = system_prompt.replace("[Procedure Name]", proc)
         
-    logging.info(f"Generated system prompt for purpose: {purpose}")
+    patient_name = patient_data.get("name","none obtained")
+    logging.info(f"Generated system prompt for name: {patient_name} purpose: {purpose}")
     return system_prompt
 
 
