@@ -14,7 +14,8 @@ from firebase_admin import credentials, firestore
 from dotenv import load_dotenv
 
 # --- Hume Imports ---
-from hume import MicrophoneInterface, Stream
+from hume.empathic_voice.chat.audio.microphone_interface import MicrophoneInterface
+from hume import Stream
 from hume.client import AsyncHumeClient
 from hume.empathic_voice.chat.socket_client import ChatConnectOptions, SubscribeEvent, AsyncChatSocketClient
 from hume.core.api_error import ApiError
@@ -434,6 +435,8 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
                     byte_stream=hume_stream
                 )
             )
+
+            logging.info(f"DEBUG: Twilio listener setup successful for {call_sid}")
             
             await twilio_listener_task
 
