@@ -386,6 +386,7 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
         logging.info(f"DEBUG: Successfully retrieved connection details for {call_sid}")
 
         system_prompt = connection_details.get("system_prompt", "You are a helpful assistant.")
+
         doc_ref = connection_details.get("doc_ref") # Assign to outer scope variable
         encounter_date = connection_details.get("encounter_date") # Assign to outer scope variable
         
@@ -403,10 +404,6 @@ async def twilio_media_websocket(websocket: WebSocket, call_sid: str):
         # 2. Use the new .connect() method and pass callbacks
         async with hume_client.empathic_voice.chat.connect(
             session_settings=session_settings,
-            on_open=handler.on_open,
-            on_message=handler.on_message,
-            on_close=handler.on_close,
-            on_error=handler.on_error
         ) as socket:
             
             logging.info(f"DEBUG: Hume EVI connection successful for {call_sid}")
