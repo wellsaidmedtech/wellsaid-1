@@ -15,6 +15,8 @@ from twilio.twiml.voice_response import VoiceResponse, Connect
 from twilio.rest import Client as TwilioRestClient
 from twilio.base.exceptions import TwilioRestException
 from pydantic import BaseModel
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 # --- Basic Logging Setup ---
 # Added function name and line number to logs for better debugging
@@ -26,7 +28,7 @@ app = FastAPI()
 
 # --- Configuration Loading ---
 HUME_API_KEY = os.environ.get("HUME_API_KEY")
-HUME_EVI_WS_URL = "wss://api.hume.ai/v0/evi/chat"
+HUME_EVI_WS_URI = "wss://api.hume.ai/v0/evi/chat"
 HUME_CONFIG_ID = os.environ.get("HUME_CONFIG_ID")
 RENDER_APP_HOSTNAME = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
@@ -36,7 +38,7 @@ TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER")
 # Check for essential configuration at startup
 missing_vars = []
 if not HUME_API_KEY: missing_vars.append("HUME_API_KEY")
-if not HUME_EVI_WS_URL: missing_vars.append("HUME_EVI_WS_URL")
+if not HUME_EVI_WS_URI: missing_vars.append("HUME_EVI_WS_URI")
 if not HUME_CONFIG_ID: missing_vars.append("HUME_CONFIG_ID")
 if not RENDER_APP_HOSTNAME: missing_vars.append("RENDER_APP_HOSTNAME")
 if not TWILIO_ACCOUNT_SID: missing_vars.append("TWILIO_ACCOUNT_SID")
@@ -57,39 +59,116 @@ if all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN]):
 else:
     log.warning("Twilio credentials missing, outbound calls will not function.")
 
-# --- Patient Database with MRN as Key ---
-patient_mrn = "89728342" # Hard-coded MRN for testing
+# 3. Initialize Firebase
+try:
+    firebase_admin.initialize_app()
+    db = firestore.client()
+    logging.info("Firebase Firestore client initialized successfully via GOOGLE_APPLICATION_CREDENTIALS.")
+except Exception as e:
+    logging.error(f"Failed to initialize Firebase. Is GOOGLE_APPLICATION_CREDENTIALS set correctly? Error: {e}")
+    db = None
 
-DUMMY_PATIENT_DB = {
-    patient_mrn: {
-        "phone_number": "+19087839700",
-        "name": "Lon Kai",
-        "date_of_birth": "03/21/1980",
-        "age": 45,
-        "gender": "Male",
-        "medical_conditions": ["Hypertension", "Diabetes", "Hyperlipidemia"],
-        "current_medications": ["Lisinopril 10 mg", "Metformin 500 mg", "Atorvastatin 20 mg"],
-        "most_recent_visit": "2 weeks ago",
-        "purpose_of_call": "post-visit follow up"
-    }
-    # Add more dummy patients here if needed
-}
-log.info(f"Loaded dummy patient 'Lon Kai' with MRN: {patient_mrn}")
+# # --- Patient Database with MRN as Key ---
+# patient_mrn = "89728342" # Hard-coded MRN for testing
+
+# DUMMY_PATIENT_DB = {
+#     patient_mrn: {
+#         "phone_number": "+19087839700",
+#         "name": "Lon Kai",
+#         "date_of_birth": "03/21/1980",
+#         "age": 45,
+#         "gender": "Male",
+#         "medical_conditions": ["Hypertension", "Diabetes", "Hyperlipidemia"],
+#         "current_medications": ["Lisinopril 10 mg", "Metformin 500 mg", "Atorvastatin 20 mg"],
+#         "most_recent_visit": "2 weeks ago",
+#         "purpose_of_call": "post-visit follow up"
+#     }
+#     # Add more dummy patients here if needed
+# }
+# log.info(f"Loaded dummy patient 'Lon Kai' with MRN: {patient_mrn}")
 
 # --- Patient Lookup Functions ---
 def get_patient_info_by_phone(phone_number: str) -> dict | None:
     if not phone_number: return None
-    for mrn, data in DUMMY_PATIENT_DB.items():
+    for mrn, data in db.items():
         if data.get("phone_number") == phone_number:
             return {"mrn": mrn, **data}
     return None
 
 def get_patient_info_by_mrn(mrn: str) -> dict | None:
     if not mrn: return None
-    data = DUMMY_PATIENT_DB.get(mrn)
+    # data = DUMMY_PATIENT_DB.get(mrn)
+    data = db.get(mrn)
     if data:
         return {"mrn": mrn, **data}
     return None
+
+def get_patient_doc_ref(clinic_id, mrn):
+    """Fetches a patient's Firestore document reference. (SYNC)"""
+    if not db:
+        logging.error("Firestore DB not available.")
+        return None
+    try:
+        doc_ref = db.collection(f"clinics/{clinic_id}/patients").document(mrn)
+        doc = doc_ref.get()
+        if not doc.exists:
+            logging.warning(f"Patient doc not found for clinic {clinic_id}, MRN {mrn}")
+            return None
+        return doc_ref
+    except Exception as e:
+        logging.error(f"Error fetching patient doc ref: {e}")
+        return None
+
+def fetch_prompts(prompt_ids):
+    """Fetches a list of prompts from the prompt_library collection. (SYNC)"""
+    if not db:
+        logging.error("Firestore DB not available.")
+        return {}
+    
+    prompt_data = {}
+    try:
+        for doc_id in prompt_ids:
+            doc_ref = db.collection("prompt_library").document(doc_id)
+            doc = doc_ref.get()
+            if doc.exists:
+                prompt_data[doc_id] = doc.to_dict().get("content", "")
+            else:
+                logging.warning(f"Prompt document not found: {doc_id}")
+                prompt_data[doc_id] = ""
+    except Exception as e:
+        logging.error(f"Error fetching prompts: {e}")
+    return prompt_data
+
+def generate_system_prompt(base_prompt, patient_data, purpose):
+    """Generates a dynamic system prompt based on call purpose and patient data. (SYNC)"""
+    system_prompt = base_prompt.replace("[Patient Name]", patient_data.get("name", "the patient"))
+    
+    kb_doc_id = ""
+    if purpose == "medication adherence" or purpose == "medication follow-up":
+        kb_doc_id = "kb_medication_adherence"
+    elif purpose == "post-op checkin":
+        kb_doc_id = "kb_post_op_checkin"
+    
+    if kb_doc_id:
+        try:
+            kb_prompts = fetch_prompts([kb_doc_id])
+            kb_content = kb_prompts.get(kb_doc_id)
+            if kb_content:
+                system_prompt += f"\n\n--- {kb_doc_id.replace('_', ' ').title()} Protocol ---\n{kb_content}"
+        except Exception as e:
+            logging.error(f"Failed to fetch KB prompt {kb_doc_id}: {e}")
+
+    if purpose == "medication adherence" or purpose == "medication follow-up":
+        meds = ", ".join(patient_data.get("medications", [])) or "your new medications"
+        system_prompt = system_prompt.replace("[Medication List]", meds)
+    
+    if purpose == "post-op checkin":
+        proc = ", ".join(patient_data.get("procedures_history", [])) or "your recent procedure"
+        system_prompt = system_prompt.replace("[Procedure Name]", proc)
+        
+    logging.info(f"Generated system prompt for purpose: {purpose}")
+    return system_prompt
+
 
 # --- WebSocket Connection Management ---
 active_connections = {} # Key: CallSid, Value: Dict
@@ -209,32 +288,63 @@ async def handle_incoming_call(request: Request):
 
         log.info(f"CallSid: {call_sid}, Patient Number: {from_number}, MRN from URL: {mrn}")
 
-        # --- 1. Identify Patient (using MRN) ---
-        patient_data = get_patient_info_by_mrn(mrn)
-        if not patient_data:
-            log.error(f"Could not find patient for MRN {mrn} provided in webhook URL. CallSid: {call_sid}")
-            response = VoiceResponse(); response.say("System error: Could not retrieve patient records.", voice='alice'); response.hangup()
-            return Response(content=str(response), media_type="text/xml", status_code=200)
+        doc_ref = get_patient_doc_ref(clinic_id, mrn)
+        if not doc_ref:
+            logging.error(f"Could not find patient doc ref for MRN {mrn}. CallSid: {call_sid}")
+            return Response(content=response.to_xml(), media_type="text/xml")
+        
+        patient_data = doc_ref.get().to_dict()
 
-        log.info(f"Identified Patient: {patient_data.get('name', 'N/A')} (MRN: {mrn})")
+        scheduled_call = None
+        encounter_date = None
+        if "encounters" in patient_data:
+            sorted_encounters = sorted(patient_data["encounters"].items(), key=lambda item: item[0], reverse=True)
+            for date, encounter in sorted_encounters:
+                if encounter.get("status") == "scheduled" and "AI" in encounter.get("type", ""):
+                    scheduled_call = encounter
+                    encounter_date = date
+                    break 
+
+        if not scheduled_call:
+            logging.error(f"No scheduled AI call found for MRN {mrn}. CallSid: {call_sid}")
+            return Response(content=response.to_xml(), media_type="text/xml")
+
+        call_purpose = scheduled_call.get("purpose", "a routine check-in")
+        logging.info(f"Found scheduled call with purpose: {call_purpose}")
+
+        base_prompts_data = fetch_prompts(['prompt_identity', 'prompt_rules'])
+        base_prompt = f"{base_prompts_data.get('prompt_identity', '')}\n\n{base_prompts_data.get('prompt_rules', '')}"
+        
+        system_prompt = generate_system_prompt(base_prompt, patient_data, call_purpose)
+
+        # # --- 1. Identify Patient (using MRN) ---
+        # patient_data = get_patient_info_by_mrn(mrn)
+        # if not patient_data:
+        #     log.error(f"Could not find patient for MRN {mrn} provided in webhook URL. CallSid: {call_sid}")
+        #     response = VoiceResponse(); response.say("System error: Could not retrieve patient records.", voice='alice'); response.hangup()
+        #     return Response(content=str(response), media_type="text/xml", status_code=200)
+
+        # log.info(f"Identified Patient: {patient_data.get('name', 'N/A')} (MRN: {mrn})")
 
         # --- 2. Connect to Hume EVI ---
-        if not HUME_API_KEY or not HUME_EVI_WS_URL or not HUME_CONFIG_ID:
+        if not HUME_API_KEY or not HUME_EVI_WS_URI or not HUME_CONFIG_ID:
             log.error(f"Hume configuration missing. Cannot connect. CallSid: {call_sid}")
             response = VoiceResponse(); response.say("AI service configuration error."); response.hangup()
             return Response(content=str(response), media_type="text/xml", status_code=200)
-            
-        uri_with_key_and_config = (
-            f"{HUME_EVI_WS_URL}?apiKey={HUME_API_KEY}"
+        
+
+        hume_socket_uri = (
+            f"{HUME_EVI_WS_URI}?apiKey={HUME_API_KEY}"
             f"&config_id={HUME_CONFIG_ID}"
             f"&verbose_transcription=true"
         )
         log.info(f"Connecting to Hume EVI WebSocket... CallSid: {call_sid}")
         
         try:
-             hume_websocket = await websockets.connect(uri_with_key_and_config)
+            hume_websocket = await websockets.connect(hume_socket_uri)
+
         except websockets.exceptions.InvalidURI:
-             log.error(f"Invalid Hume WebSocket URI: {HUME_EVI_WS_URL}. CallSid: {call_sid}", exc_info=True)
+             log.error(f"Invalid Hume WebSocket URI: {HUME_EVI_WS_URI}. CallSid: {call_sid}", exc_info=True)
              response = VoiceResponse(); response.say("AI connection error: Invalid address."); response.hangup()
              return Response(content=str(response), media_type="text/xml", status_code=200)
         except websockets.exceptions.WebSocketException as e:
@@ -254,39 +364,49 @@ async def handle_incoming_call(request: Request):
         }
 
         # --- 3. Send Initial Settings (with VARIABLES and TOOL) ---
-        conditions_list = ", ".join(patient_data.get('medical_conditions', ['N/A']))
-        medications_list = ", ".join(patient_data.get('current_medications', ['N/A']))
-        
-        tool_params_schema = {
-            "type": "object",
-            "properties": {
-                "summary": { "type": "string", "description": "Summary of patient concern and call outcome."},
-                "action_statement": { "type": "string", "description": "Final action: EMERGENCY_911, REFILL_REQUEST, NOTE_FOR_REVIEW, or VERIFICATION_FAILED."}
-            },
-            "required": ["summary", "action_statement"]
-        }
 
         initial_message = {
             "type": "session_settings",
-            "variables": {
-                "patient_name": patient_data.get('name', 'the patient'),
-                "dob": patient_data.get('date_of_birth', 'N/A'),
-                "age": str(patient_data.get('age', 'N/A')),
-                "gender": patient_data.get('gender', 'N/A'),
-                "conditions": conditions_list,
-                "medications": medications_list,
-                "last_visit": patient_data.get('most_recent_visit', 'N/A'),
-                "call_purpose": patient_data.get('purpose_of_call', 'a routine check-in')
-            },
+            "context": "You are a helpful AI agent.",
             "audio": { "encoding": "linear16", "sample_rate": 8000, "channels": 1 },
             "voice": { "id": "97fe9008-8584-4d56-8453-bd8c7ead3663", "provider": "HUME_AI" },
             "evi_version": "3",
-            "tools": [{
-                "type": "function", "name": "end_call_triage",
-                "description": "Summarize call and log final action.",
-                "parameters": json.dumps(tool_params_schema) # Stringified
-            }]
+            "system_prompt": system_prompt
         }
+
+        # conditions_list = ", ".join(patient_data.get('medical_conditions', ['N/A']))
+        # medications_list = ", ".join(patient_data.get('current_medications', ['N/A']))
+        
+        # tool_params_schema = {
+        #     "type": "object",
+        #     "properties": {
+        #         "summary": { "type": "string", "description": "Summary of patient concern and call outcome."},
+        #         "action_statement": { "type": "string", "description": "Final action: EMERGENCY_911, REFILL_REQUEST, NOTE_FOR_REVIEW, or VERIFICATION_FAILED."}
+        #     },
+        #     "required": ["summary", "action_statement"]
+        # }
+
+        # initial_message = {
+        #     "type": "session_settings",
+        #     "variables": {
+        #         "patient_name": patient_data.get('name', 'the patient'),
+        #         "dob": patient_data.get('date_of_birth', 'N/A'),
+        #         "age": str(patient_data.get('age', 'N/A')),
+        #         "gender": patient_data.get('gender', 'N/A'),
+        #         "conditions": conditions_list,
+        #         "medications": medications_list,
+        #         "last_visit": patient_data.get('most_recent_visit', 'N/A'),
+        #         "call_purpose": patient_data.get('purpose_of_call', 'a routine check-in')
+        #     },
+        #     "audio": { "encoding": "linear16", "sample_rate": 8000, "channels": 1 },
+        #     "voice": { "id": "97fe9008-8584-4d56-8453-bd8c7ead3663", "provider": "HUME_AI" },
+        #     "evi_version": "3",
+        #     "tools": [{
+        #         "type": "function", "name": "end_call_triage",
+        #         "description": "Summarize call and log final action.",
+        #         "parameters": json.dumps(tool_params_schema) # Stringified
+        #     }]
+        # }
         
         try:
             await hume_websocket.send(json.dumps(initial_message))
