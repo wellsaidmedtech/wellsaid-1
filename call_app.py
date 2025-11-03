@@ -212,7 +212,9 @@ def fetch_prompts(prompt_ids):
 
 def generate_system_prompt(base_prompt, patient_data, purpose):
     """Generates a dynamic system prompt based on call purpose and patient data. (SYNC)"""
-    system_prompt = base_prompt.replace("[Patient Name]", patient_data.get("name", "the patient"))
+    system_prompt = base_prompt.replace("[patient-name]", patient_data.get("name", "unobtainable patient name"))
+    system_prompt = system_prompt.replace("[dob]", patient_data.get("dob", "unobtainable birthday"))
+    system_prompt = system_prompt.replace("[allergies]", patient_data.get("allergies", "unobtainable allergies"))
 
     kb_doc_id = ""
     if purpose == "medication adherence" or purpose == "medication follow-up":
@@ -231,14 +233,14 @@ def generate_system_prompt(base_prompt, patient_data, purpose):
 
     if purpose == "medication adherence" or purpose == "medication follow-up":
         meds = ", ".join(patient_data.get("medications", [])) or "your new medications"
-        system_prompt = system_prompt.replace("[Medication List]", meds)
+        system_prompt = system_prompt.replace("[medications]", meds)
     
     if purpose == "post-op checkin":
         proc = ", ".join(patient_data.get("procedures_history", [])) or "your recent procedure"
-        system_prompt = system_prompt.replace("[Procedure Name]", proc)
+        system_prompt = system_prompt.replace("[procedures-history]", proc)
         
     patient_name = patient_data.get("name","none obtained")
-    logging.info(f"Generated system prompt for name: {patient_name} purpose: {purpose}")
+    logging.info(f"Generated system prompt for name: {patient_name}")
     return system_prompt
 
 
@@ -396,8 +398,8 @@ async def handle_incoming_call(request: Request):
         call_purpose = scheduled_call.get("purpose", "a routine check-in")
         logging.info(f"Found scheduled call with purpose: {call_purpose}")
 
-        base_prompts_data = fetch_prompts(['prompt_identity', 'prompt_rules'])
-        base_prompt = f"{base_prompts_data.get('prompt_identity', '')}\n\n{base_prompts_data.get('prompt_rules', '')}"
+        base_prompts_data = fetch_prompts(['prompt_identity', 'prompt_rules', 'patient_identity'])
+        base_prompt = f"{base_prompts_data.get('prompt_identity', '')}\n\n{base_prompts_data.get('prompt_rules', '')}\n\n{base_prompts_data.get('patient_identity', '')}"
         
         system_prompt = generate_system_prompt(base_prompt, patient_data, call_purpose)
 
