@@ -348,13 +348,16 @@ class EviHandler:
                     # 4. Re-encode the new PCM-16 bytes into base64
                     pcm_b64 = base64.b64encode(pcm_bytes).decode('utf-8')
                     
-                    # 5. --- CRITICAL FIX: Use send_publish (the new method)
-                    #    and pass it the AudioInput *model* it expects.
-                    audio_message = AudioInput(
-                        type="audio_input",
-                        data=pcm_b64
-                        )
-                    logging.info({audio_message})
+                    # # 5. --- CRITICAL FIX: Use send_publish (the new method)
+                    # #    and pass it the AudioInput *model* it expects.
+                    # audio_message = AudioInput(
+                    #     type="audio_input",
+                    #     data=pcm_b64
+                    #     )
+
+                    audio_message = { "type": "audio_input", "data": pcm_b64 }
+
+                    
                     await self.hume_socket.send_publish(audio_message)
                     
                 elif message_json['event'] == 'stop':
