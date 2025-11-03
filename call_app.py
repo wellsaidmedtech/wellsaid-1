@@ -256,7 +256,7 @@ async def cleanup_connection(call_sid: str, reason: str = "Unknown"):
     # 1. Clean up Redis data
     del_connection_details(call_sid)
     log.info(f"Removed connection details from Redis for {call_sid}")
-    
+
     # 2. Clean up local WebSocket objects (your existing logic)
     connection_details = active_connections.pop(call_sid, None)
 
@@ -657,16 +657,16 @@ async def handle_twilio_audio_stream(websocket: WebSocket, call_sid: str):
                     log.warning(f"Skipping Twilio media - Hume WS closed. CallSid: {call_sid}")
                     continue
                 
-                if connection_details.get("is_interrupted", False):
-                # User started speaking while AI was talking.
-                    log.info(f"User interruption detected. Sending 'user_interruption' to Hume. CallSid: {call_sid}")
-                try:
-                    # Tell Hume to stop talking
-                    await hume_ws.send(json.dumps({"type": "user_interruption"}))
-                    # Reset the flag immediately
-                    connection_details["is_interrupted"] = False
-                except Exception as e:
-                    log.warning(f"Failed to send user_interruption to Hume: {e}. CallSid: {call_sid}")
+                # if connection_details.get("is_interrupted", False):
+                # # User started speaking while AI was talking.
+                #     log.info(f"User interruption detected. Sending 'user_interruption' to Hume. CallSid: {call_sid}")
+                # try:
+                #     # Tell Hume to stop talking
+                #     await hume_ws.send(json.dumps({"type": "user_interruption"}))
+                #     # Reset the flag immediately
+                #     connection_details["is_interrupted"] = False
+                # except Exception as e:
+                #     log.warning(f"Failed to send user_interruption to Hume: {e}. CallSid: {call_sid}")
 
 
                 try:
