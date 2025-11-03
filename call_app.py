@@ -350,7 +350,10 @@ class EviHandler:
                     
                     # 5. --- CRITICAL FIX: Use send_publish (the new method)
                     #    and pass it the AudioInput *model* it expects.
-                    audio_message = AudioInput(data=pcm_b64)
+                    audio_message = AudioInput(
+                        data=pcm_b64,
+                        type="audio_input"
+                        )
                     await self.hume_socket.send_publish(audio_message)
                     
                 elif message_json['event'] == 'stop':
